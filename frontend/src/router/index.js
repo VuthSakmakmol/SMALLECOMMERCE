@@ -1,7 +1,11 @@
+// src/router/index.js
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/store/auth'
 
-const Login           = () => import('@/views/Login.vue')
+// Auth
+const Login = () => import('@/views/Login.vue')
+
+// Admin layout + pages
 const AdminLayout     = () => import('@/layouts/AdminLayout.vue')
 const AdminDashboard  = () => import('@/views/admin/AdminDashboard.vue')
 const AdminCategories = () => import('@/views/admin/AdminCategories.vue')
@@ -9,8 +13,18 @@ const AdminFoods      = () => import('@/views/admin/AdminFoods.vue')
 const AdminOrders     = () => import('@/views/admin/AdminOrders.vue')
 const AdminUsers      = () => import('@/views/admin/AdminUsers.vue')
 
-const ChefHome       = () => import('@/views/chef/ChefHome.vue')
-const CustomerHome   = () => import('@/views/customer/CustomerHome.vue')
+// Chef layout + pages
+const ChefLayout      = () => import('@/layouts/ChefLayout.vue')
+const ChefOrders      = () => import('@/views/chef/ChefOrders.vue')
+const ChefCategories  = () => import('@/views/chef/ChefCategories.vue')
+const ChefFoods       = () => import('@/views/chef/ChefFoods.vue')
+const ChefAvailability= () => import('@/views/chef/ChefAvailability.vue')
+
+// Customer layout + pages
+const CustomerLayout     = () => import('@/layouts/CustomerLayout.vue')
+const CustomerBrowse     = () => import('@/views/customer/CustomerBrowse.vue')
+const CustomerCategories = () => import('@/views/customer/CustomerCategories.vue')
+const CustomerHistory    = () => import('@/views/customer/CustomerHistory.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -24,7 +38,7 @@ const router = createRouter({
       component: AdminLayout,
       meta: { role: 'ADMIN' },
       children: [
-        { path: '',            name: 'admin-dashboard', component: AdminDashboard },
+        { path: '',            name: 'admin-dashboard',  component: AdminDashboard },
         { path: 'categories',  name: 'admin-categories', component: AdminCategories },
         { path: 'foods',       name: 'admin-foods',      component: AdminFoods },
         { path: 'orders',      name: 'admin-orders',     component: AdminOrders },
@@ -32,8 +46,31 @@ const router = createRouter({
       ]
     },
 
-    { path: '/chef',     name: 'chef',     component: ChefHome,     meta: { role: 'CHEF' } },
-    { path: '/customer', name: 'customer', component: CustomerHome, meta: { role: 'CUSTOMER' } },
+    // CHEF with sidebar
+    {
+      path: '/chef',
+      component: ChefLayout,
+      meta: { role: 'CHEF' },
+      children: [
+        { path: '',              name: 'chef-orders',       component: ChefOrders },
+        { path: 'categories',    name: 'chef-categories',   component: ChefCategories },
+        { path: 'foods',         name: 'chef-foods',        component: ChefFoods },
+        { path: 'availability',  name: 'chef-availability', component: ChefAvailability },
+      ]
+    },
+
+    {
+      path: '/customer',
+      component: CustomerLayout,
+      meta: { role: 'CUSTOMER' },
+      children: [
+        { path: '',            name: 'customer-browse',     component: CustomerBrowse },
+        { path: 'categories',  name: 'customer-categories', component: CustomerCategories },
+        { path: 'history',     name: 'customer-history',    component: CustomerHistory },
+      ]
+    },
+    // 404 fallback
+    { path: '/:pathMatch(.*)*', redirect: '/login' }
   ]
 })
 
@@ -45,8 +82,8 @@ router.beforeEach((to) => {
 
   const need = to.meta.role
   if (need && auth.role !== need) {
-    if (auth.role === 'ADMIN')   return { name: 'admin-dashboard' }
-    if (auth.role === 'CHEF')    return { name: 'chef' }
+    if (auth.role === 'ADMIN') return { name: 'admin-dashboard' }
+    if (auth.role === 'CHEF')  return { name: 'chef-orders' }
     return { name: 'customer' }
   }
   return true

@@ -1,25 +1,56 @@
 const router = require('express').Router()
-const { body } = require('express-validator')
+const { body, param, query } = require('express-validator')
 const { authenticate, authorize } = require('../middleware/auth')
 const { validate } = require('../middleware/validate')
 const ctrl = require('../controllers/categories.controller')
 
-// list (public or protect later)
-router.get('/', ctrl.list)
+// List + Get (public; lock down later if you prefer)
+router.get('/',
+  [
+    query('activeOnly').optional().isIn(['true','false']),
+    query('q').optional().isString(),
+    query('parentId').optional().isString()
+  ],
+  validate,
+  ctrl.list
+)
 
-// admin-only CRUD
-router.post('/', authenticate, authorize('ADMIN'),
-  [ body('name').isString().notEmpty() ],
-  validate, ctrl.create)
+router.get('/:id', [param('id').isMongoId()], validate, ctrl.getOne)
 
-router.put('/:id', authenticate, authorize('ADMIN'),
-  [ body('name').optional().isString().notEmpty(), body('order').optional().isInt({ min: 0 }) ],
-  validate, ctrl.update)
+// Create/Update/Toggle/Delete — ADMIN or CHEF
+router.post('/',
+  authenticate, authorize('ADMIN','CHEF'),
+  [ body('name').isString().notEmpty(),
+    body('parentId').optional().isMongoId(),
+    body('order').optional().isInt({ min: 0 }) ],
+  validate,
+  ctrl.create
+)
 
-router.delete('/:id', authenticate, authorize('ADMIN'), ctrl.removeOne)
+router.put('/:id',
+  authenticate, authorize('ADMIN','CHEF'),
+  [ param('id').isMongoId(),
+    body('name').optional().isString().notEmpty(),
+    body('parentId').optional().isMongoId(),
+    body('order').optional().isInt({ min: 0 }),
+    body('isActive').optional().isBoolean() ],
+  validate,
+  ctrl.update
+)
 
-router.patch('/:id/toggle', authenticate, authorize('ADMIN'),
-  [ body('value').isBoolean() ],
-  validate, ctrl.toggle)
+router.patch('/:id/toggle',
+  authenticate, authorize('ADMIN','CHEF'),
+  [ param('id').isMongoId(),
+    body('value').isBoolean() ],
+  validate,
+  ctrl.toggle
+)
+
+router.delete('/:id',
+  authenticate, authorize('ADMIN','CHEF'),
+  [ param('id').isMongoId() ],
+  validate,
+  ctrl.removeOne
+)
 
 module.exports = router

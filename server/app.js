@@ -32,13 +32,16 @@ const authRoutes  = require('./src/routes/auth.routes')
 const orderRoutes = require('./src/routes/orders.routes')  // plural
 const categoryRoutes = require('./src/routes/categories.routes')
 const foodRoutes     = require('./src/routes/foods.routes')
+const userRoutes = require('./src/routes/users.routes')
+
 
 
 app.use('/api/auth', authRoutes)
 app.use('/api/orders', orderRoutes)
 app.use('/api/categories', categoryRoutes)
-app.use('/api/foods', foodsRoutes = foodRoutes) // (keep /api/foods path the same)
-
+app.use('/api/foods', foodsRoutes = foodRoutes)
+app.use('/api/users', userRoutes)
+app.use('/api/orders', orderRoutes)
 
 
 /* ───────────────────────────────
@@ -67,20 +70,19 @@ const io = new Server(server, {
 })
 
 io.on('connection', (socket) => {
-  console.log('[Socket] client connected:', socket.id)
-
-  // Example room join
   socket.on('join', ({ role, userId, kitchenId }) => {
     if (role === 'ADMIN') socket.join('room:admin')
-    if (role === 'CHEF' && kitchenId) socket.join(`room:chef:${kitchenId}`)
-    if (role === 'CUSTOMER' && userId) socket.join(`room:customer:${userId}`)
-    console.log('[Socket] joined rooms:', [...socket.rooms])
+    if (role === 'CHEF')  socket.join(`room:chef:${kitchenId || 'default'}`)
+    if (role === 'CUSTOMER') socket.join(`room:customer:${userId}`)
   })
 
-  socket.on('disconnect', () => {
-    console.log('[Socket] client disconnected:', socket.id)
+  // let the customer subscribe to just their active order too
+  socket.on('join-order', ({ orderId }) => {
+    if (orderId) socket.join(`room:order:${orderId}`)
   })
 })
+app.set('io', io)
+
 
 app.set('io', io)
 

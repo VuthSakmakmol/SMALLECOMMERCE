@@ -27,15 +27,15 @@ const logout = () => { auth.logout(); router.push('/login') }
         <v-list-item title="Small E-Commerce" subtitle="Admin" />
         <v-divider />
         <v-list-item
-  v-for="it in items"
-  :key="it.to"
-  :to="it.to"
-  :prepend-icon="it.icon"
-  :title="it.text"     
-  :active="isActive(it.to)"
-  rounded="lg"
-  nav
-/>
+            v-for="it in items"
+            :key="it.to"
+            :to="it.to"
+            :prepend-icon="it.icon"
+            :title="it.text"     
+            :active="isActive(it.to)"
+            rounded="lg"
+            nav
+        />
 
         <v-list-item prepend-icon="mdi-logout" title="Sign out" @click="logout" />
       </v-list>

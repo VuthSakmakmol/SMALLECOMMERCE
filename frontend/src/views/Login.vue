@@ -10,11 +10,11 @@ const router = useRouter()
 const submit = async () => {
   const ok = await auth.login(email.value, password.value)
   if (!ok) return
-  // direct to admin dashboard
-  if (auth.role === 'ADMIN') router.push('/admin')         // <<— here
-  else if (auth.role === 'CHEF') router.push('/chef')
-  else router.push('/customer')
+  if (auth.role === 'ADMIN') router.push('/admin')
+  else if (auth.role === 'CHEF') router.push('/chef')      
+  else router.push('/customer')                        
 }
+
 </script>
 
 
