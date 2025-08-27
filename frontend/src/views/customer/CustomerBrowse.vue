@@ -1,178 +1,305 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { useCart } from '@/store/cart'
+import { useAuth } from '@/store/auth'
 import api from '@/utils/api'
-import socket from '@/utils/socket'
 
-const ORDER_KEY = 'current_order_id'
+const router = useRouter()
+const route = useRoute()
+const auth = useAuth()
+const cart = useCart()
 
-const cats = ref([]); const foods = ref([])
-const loading = ref(false); const placing = ref(false)
+const loading = ref(false)
+const categories = ref([])
+const foods = ref([])
+const packages = ref([])
 
-const cart = ref([]) // [{ _id,name,qty,preferences }]
-const currentOrder = ref(null)
+const q = ref('')
+const cat = ref('ALL')
+const tab = ref('foods') // 'foods' | 'packages'
 
-const statusText = {
-  PENDING:'Pending — waiting for chef',
-  ACCEPTED:'Accepted — please wait',
-  COOKING:'Cooking',
-  READY:'Ready — please pick up',
-  DELIVERED:'Delivered — enjoy!'
+// NEW: cart drawer + snackbar
+const cartOpen = ref(false)
+const snack = ref({ show:false, text:'' })
+function notify(t){ snack.value = { show:true, text:t } }
+
+const categoryOptions = computed(() => [
+  { title: 'All Categories', value: 'ALL' },
+  ...categories.value.map(c => ({ title: c.name, value: c._id }))
+])
+
+async function loadCats () {
+  const { data } = await api.get('/categories?activeOnly=true')
+  categories.value = data
 }
-const tasteOptions = ['chilli','tasty','sweet','sour','salty','no onion']
+async function loadFoods () {
+  const params = new URLSearchParams()
+  params.set('activeOnly', 'true')
+  if (q.value) params.set('q', q.value)
+  if (cat.value !== 'ALL') params.set('categoryId', cat.value)
+  const { data } = await api.get(`/foods?${params.toString()}`)
+  foods.value = data
+}
+async function loadPackages () {
+  const params = new URLSearchParams()
+  params.set('activeOnly', 'true')
+  if (q.value) params.set('q', q.value)
+  const { data } = await api.get(`/packages?${params.toString()}`)
+  packages.value = data
+}
 
-const grouped = computed(() => {
-  const by = {}; cats.value.forEach(c => by[c._id] = { cat:c, foods:[] })
-  foods.value.forEach(f => by[f.categoryId?._id || f.categoryId]?.foods.push(f))
-  return Object.values(by).filter(g => g.foods.length)
-})
-
-const load = async () => {
+async function refresh () {
   loading.value = true
   try {
-    const [c,f] = await Promise.all([
-      api.get('/categories',{ params:{ activeOnly:true }}),
-      api.get('/foods',{ params:{ activeOnly:true }})
-    ])
-    cats.value = c.data; foods.value = f.data
+    await Promise.all([loadCats(), loadFoods(), loadPackages()])
   } finally { loading.value = false }
 }
-const stepIndex = (s) => ({ PENDING:1, ACCEPTED:2, COOKING:3, READY:4, DELIVERED:5 }[s] || 1)
 
-
-function addToCart(food){
-  const i = cart.value.findIndex(x=>x._id===food._id)
-  if(i>=0) cart.value[i].qty++
-  else cart.value.push({ _id:food._id, name:food.name, qty:1, preferences:{} })
-}
-function changePref(item, key){ item.preferences[key] = !item.preferences[key] }
-
-async function placeOrder(){
-  if(!cart.value.length) return
-  placing.value = true
-  try{
-    const items = cart.value.map(it=>({ foodId:it._id, qty:it.qty, preferences:it.preferences }))
-    const { data } = await api.post('/orders',{ items })
-    currentOrder.value = data
-    localStorage.setItem(ORDER_KEY, data._id)
-    cart.value = []
-    socket.emit('join-order', { orderId: data._id })
-  } finally { placing.value = false }
+function canAddFood (f) {
+  if (f.dailyLimit === null) return true
+  const k = `FOOD:${f._id}`
+  const inCart = cart.items.find(i => i.key === k)?.qty || 0
+  const remaining = Number(f.stockRemaining ?? f.dailyLimit ?? 0)
+  return inCart < remaining
 }
 
-async function refreshSavedOrder(){
-  const id = localStorage.getItem(ORDER_KEY); if(!id) return
-  try{
-    const { data } = await api.get(`/orders/${id}`)
-    currentOrder.value = data
-    socket.emit('join-order', { orderId: id })
-  }catch{
-    localStorage.removeItem(ORDER_KEY)
-    currentOrder.value = null
+function addFood (f) {
+  if (!canAddFood(f)) return alert('No more stock for today.')
+  cart.addFood(f, 1)
+  cartOpen.value = true
+  notify(`Added: ${f.name}`)
+}
+function addPackage (p) {
+  cart.addPackage(p, 1)
+  cartOpen.value = true
+  notify(`Added package: ${p.name}`)
+}
+
+async function placeOrder () {
+  if (!cart.hasItems) return
+  const payload = {
+    type: cart.orderType, // 'INDIVIDUAL' | 'GROUP' | 'WORKSHOP'
+    groupKey: cart.orderType === 'GROUP' ? (cart.groupKey || null) : null,
+    notes: cart.notes || '',
+    items: cart.items.map(i => i.kind === 'FOOD'
+      ? { kind: 'FOOD', foodId: i.id, qty: i.qty }
+      : { kind: 'PACKAGE', packageId: i.id, qty: i.qty }
+    )
+  }
+  try {
+    await api.post('/orders', payload)
+    cart.clear()
+    cartOpen.value = false
+    router.push('/customer/history')
+  } catch (e) {
+    console.error(e)
+    alert(e?.response?.data?.message || 'Failed to place order')
   }
 }
 
-async function markDelivered(){
-  if(!currentOrder.value) return
-  await api.patch(`/orders/${currentOrder.value._id}/deliver`)
-}
-
-function onOrderUpdate(p){
-  const id = currentOrder.value?._id || localStorage.getItem(ORDER_KEY)
-  if(!id || p.orderId !== id) return
-  if(!currentOrder.value) currentOrder.value = { _id:id, status:p.status }
-  else currentOrder.value.status = p.status
-  if(['DELIVERED','CANCELED'].includes(p.status)) localStorage.removeItem(ORDER_KEY)
-}
-
-onMounted(async ()=>{ await load(); await refreshSavedOrder(); socket.on('orders:update', onOrderUpdate) })
-onBeforeUnmount(()=> socket.off('orders:update', onOrderUpdate))
+onMounted(async () => {
+  if (route.query.cat) cat.value = String(route.query.cat)
+  await refresh()
+})
 </script>
 
 <template>
-  <div>
-    <h2>Menu</h2>
-    <v-progress-linear v-if="loading" indeterminate class="mb-3" />
-    <div v-for="g in grouped" :key="g.cat._id" class="mb-6">
-      <h3 class="mb-2">{{ g.cat.name }}</h3>
-      <v-row dense>
-        <v-col cols="12" sm="6" md="4" v-for="f in g.foods" :key="f._id">
-          <v-card>
-            <v-img v-if="f.imageUrl" :src="f.imageUrl" height="140" cover />
-            <v-card-title>{{ f.name }}</v-card-title>
-            <v-card-subtitle v-if="f.description">{{ f.description }}</v-card-subtitle>
-            <v-card-actions>
-              <v-btn color="primary" @click="addToCart(f)">Add</v-btn>
-              <v-spacer />
-              <v-chip v-if="f.stockRemaining === 0" color="error" size="small" variant="tonal">Out of stock</v-chip>
-            </v-card-actions>
-          </v-card>
+  <v-card class="rounded-2xl">
+    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
+      <v-toolbar-title>Browse</v-toolbar-title>
+      <template #append>
+        <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="refresh">
+          <v-icon start>mdi-refresh</v-icon> Refresh
+        </v-btn>
+        <v-btn color="white" variant="flat" @click="cartOpen = true">
+          <v-icon start>mdi-cart</v-icon> Cart ({{ cart.count }})
+        </v-btn>
+      </template>
+    </v-toolbar>
+
+    <div class="pa-4">
+      <v-row dense class="mb-3">
+        <v-col cols="12" md="5">
+          <v-text-field
+            v-model="q"
+            label="Search foods or packages"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            @keyup.enter="refresh"
+          />
+        </v-col>
+        <v-col cols="12" md="4">
+          <v-select
+            :items="categoryOptions"
+            v-model="cat"
+            label="Category"
+            :disabled="tab !== 'foods'"
+            @update:modelValue="loadFoods"
+          />
+        </v-col>
+        <v-col cols="12" md="3" class="d-flex justify-end align-center">
+          <v-btn :loading="loading" block @click="refresh">
+            <v-icon start>mdi-refresh</v-icon> Refresh
+          </v-btn>
         </v-col>
       </v-row>
+
+      <v-tabs v-model="tab" class="mb-4">
+        <v-tab value="foods">Foods</v-tab>
+        <v-tab value="packages">Packages (Workshops)</v-tab>
+      </v-tabs>
+
+      <v-window v-model="tab">
+        <!-- Foods -->
+        <v-window-item value="foods">
+          <v-row>
+            <v-col v-for="f in foods" :key="f._id" cols="12" sm="6" md="4" lg="3">
+              <v-card class="h-100 rounded-xl">
+                <v-img :src="f.imageUrl || 'https://via.placeholder.com/600x400?text=Food'"
+                       height="150" cover />
+                <v-card-title class="text-subtitle-1">{{ f.name }}</v-card-title>
+                <v-card-subtitle>{{ f.categoryId?.name || '—' }}</v-card-subtitle>
+                <v-card-text>
+                  <div class="text-caption text-medium-emphasis mb-2">{{ f.description || ' ' }}</div>
+                  <div class="d-flex align-center justify-space-between">
+                    <v-chip size="small" color="green" variant="tonal" v-if="f.dailyLimit === null">Unlimited</v-chip>
+                    <v-chip size="small" color="orange" variant="tonal" v-else>
+                      {{ (f.stockRemaining ?? f.dailyLimit) }} / {{ f.dailyLimit }} today
+                    </v-chip>
+                    <div class="text-caption">Tags: {{ (f.tags || []).join(', ') || '—' }}</div>
+                  </div>
+                </v-card-text>
+                <v-card-actions>
+                  <v-spacer />
+                  <!-- .stop to avoid bubbling -->
+                  <v-btn color="primary" :disabled="!canAddFood(f)" @click.stop="addFood(f)">
+                    <v-icon start>mdi-cart-plus</v-icon> Add
+                  </v-btn>
+                </v-card-actions>
+              </v-card>
+            </v-col>
+          </v-row>
+        </v-window-item>
+
+        <!-- Packages -->
+        <v-window-item value="packages">
+          <v-row>
+            <v-col v-for="p in packages" :key="p._id" cols="12" sm="6" md="4" lg="3">
+              <v-card class="h-100 rounded-xl">
+                <v-img :src="p.imageUrl || 'https://via.placeholder.com/600x400?text=Package'"
+                       height="150" cover />
+                <v-card-title class="text-subtitle-1">{{ p.name }}</v-card-title>
+                <v-card-subtitle class="text-primary font-weight-bold">
+                  ${{ Number(p.price || 0).toFixed(2) }}
+                </v-card-subtitle>
+                <v-card-text>
+                  <div class="text-caption text-medium-emphasis mb-2">{{ p.description || ' ' }}</div>
+                  <div class="d-flex flex-wrap ga-1">
+                    <v-chip v-for="it in p.items" :key="it.foodId" size="x-small" variant="outlined">
+                      ×{{ it.qty }}
+                    </v-chip>
+                  </div>
+                </v-card-text>
+                <v-card-actions>
+                  <v-spacer />
+                  <v-btn color="primary" @click.stop="addPackage(p)">
+                    <v-icon start>mdi-cart-plus</v-icon> Add
+                  </v-btn>
+                </v-card-actions>
+              </v-card>
+            </v-col>
+          </v-row>
+        </v-window-item>
+      </v-window>
     </div>
 
-    <v-divider class="my-6" />
+    <!-- CART DRAWER (right) -->
+    <v-navigation-drawer v-model="cartOpen" location="right" temporary width="420">
+      <v-toolbar flat>
+        <v-toolbar-title>Cart ({{ cart.count }})</v-toolbar-title>
+        <v-spacer />
+        <v-btn icon @click="cartOpen=false"><v-icon>mdi-close</v-icon></v-btn>
+      </v-toolbar>
 
-    <h2>My Cart</h2>
-    <div v-if="!cart.length" class="text-medium-emphasis">No items yet.</div>
-    <v-table v-else>
-      <thead><tr><th>Item</th><th>Qty</th><th>Preferences</th></tr></thead>
-      <tbody>
-        <tr v-for="it in cart" :key="it._id">
-          <td>{{ it.name }}</td>
-          <td>
-            <v-btn size="x-small" @click="it.qty=Math.max(1,it.qty-1)">-</v-btn>
-            <span class="mx-2">{{ it.qty }}</span>
-            <v-btn size="x-small" @click="it.qty++">+</v-btn>
-          </td>
-          <td>
-            <v-chip v-for="t in tasteOptions" :key="t" class="mr-1 mb-1" size="x-small"
-              :color="it.preferences[t] ? 'primary': undefined" variant="tonal"
-              @click="changePref(it,t)">{{ t }}</v-chip>
-          </td>
-        </tr>
-      </tbody>
-    </v-table>
-    <v-btn class="mt-3" color="primary" :loading="placing" :disabled="!cart.length" @click="placeOrder">
-      Place Order
+      <div class="pa-3">
+        <v-list density="comfortable">
+          <v-list-item v-for="it in cart.items" :key="it.key">
+            <template #prepend>
+              <v-chip size="x-small" class="mr-2" :color="it.kind==='PACKAGE' ? 'purple' : 'primary'">
+                {{ it.kind }}
+              </v-chip>
+            </template>
+            <v-list-item-title>{{ it.name }}</v-list-item-title>
+            <v-list-item-subtitle>${{ Number(it.price || 0).toFixed(2) }}</v-list-item-subtitle>
+            <template #append>
+              <div class="d-flex align-center ga-2">
+                <v-btn icon size="x-small" variant="tonal" @click="cart.dec(it)">
+                  <v-icon>mdi-minus</v-icon>
+                </v-btn>
+                <div class="text-subtitle-2" style="min-width:24px;text-align:center">{{ it.qty }}</div>
+                <v-btn icon size="x-small" variant="tonal" @click="cart.inc(it)">
+                  <v-icon>mdi-plus</v-icon>
+                </v-btn>
+                <v-btn icon size="x-small" variant="text" color="red" @click="cart.remove(it)">
+                  <v-icon>mdi-delete</v-icon>
+                </v-btn>
+              </div>
+            </template>
+          </v-list-item>
+
+          <v-list-item v-if="!cart.items.length">
+            <v-list-item-title class="text-medium-emphasis">Your cart is empty.</v-list-item-title>
+          </v-list-item>
+        </v-list>
+
+        <v-divider class="my-3" />
+
+        <v-select
+          :items="[
+            { title:'Individual', value:'INDIVIDUAL' },
+            { title:'Group',      value:'GROUP' },
+            { title:'Workshop',   value:'WORKSHOP' }
+          ]"
+          v-model="cart.orderType"
+          label="Order type"
+        />
+        <v-text-field
+          v-if="cart.orderType==='GROUP'"
+          v-model="cart.groupKey"
+          label="Group code (optional)"
+          density="comfortable"
+        />
+        <v-textarea v-model="cart.notes" rows="2" label="Notes (optional)" />
+
+        <div class="d-flex justify-space-between align-center mt-2">
+          <div class="text-h6">Total: ${{ cart.total.toFixed(2) }}</div>
+          <v-btn color="primary" :disabled="!cart.hasItems" @click="placeOrder">
+            <v-icon start>mdi-check</v-icon> Place order
+          </v-btn>
+        </div>
+      </div>
+    </v-navigation-drawer>
+
+    <!-- Floating Cart FAB -->
+    <v-btn class="cart-fab" size="large" color="primary" icon @click="cartOpen = true">
+      <v-badge :content="cart.count" :model-value="cart.count>0" overlap>
+        <v-icon>mdi-cart</v-icon>
+      </v-badge>
     </v-btn>
 
-    <v-divider class="my-6" />
-
-    <!-- Order Status -->
-    <h2>Order Status</h2>
-    <div v-if="!currentOrder" class="text-medium-emphasis">No active order.</div>
-
-    <div v-else>
-    <v-alert :type="currentOrder.status==='READY' ? 'success':'info'" variant="tonal" class="mb-4">
-        <div><b>#{{ currentOrder._id?.slice(-6) }}</b></div>
-        <div class="text-medium-emphasis">
-        {{ statusText[currentOrder.status] || currentOrder.status }}
-        </div>
-    </v-alert>
-
-    <!-- Stepper -->
-    <v-stepper :model-value="stepIndex(currentOrder.status)" alt-labels flat>
-        <v-stepper-header>
-        <v-stepper-item value="1" title="Pending" />
-        <v-divider />
-        <v-stepper-item value="2" title="Accepted" />
-        <v-divider />
-        <v-stepper-item value="3" title="Cooking" />
-        <v-divider />
-        <v-stepper-item value="4" title="Ready" />
-        <v-divider />
-        <v-stepper-item value="5" title="Delivered" />
-        </v-stepper-header>
-    </v-stepper>
-
-    <div class="mt-2">
-        <v-btn
-        v-if="currentOrder.status==='READY'"
-        size="small" color="success" @click="markDelivered">
-        I got it
-        </v-btn>
-    </div>
-    </div>
-
-  </div>
+    <!-- Snack -->
+    <v-snackbar v-model="snack.show" timeout="1500" location="bottom right">
+      {{ snack.text }}
+    </v-snackbar>
+  </v-card>
 </template>
+
+<style scoped>
+.cart-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+}
+</style>

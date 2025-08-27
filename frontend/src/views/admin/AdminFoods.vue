@@ -5,12 +5,21 @@ import api from '@/utils/api'
 const loading = ref(false)
 const categories = ref([])
 const rows = ref([])
+
 const q = ref('')
 const catFilter = ref('ALL')
 
 const dialog = ref(false)
 const editing = ref(null)
-const form = ref({ name: '', categoryId: '', imageUrl: '', description: '', tags: [] })
+const formRef = ref(null)
+
+const form = ref({
+  name: '',
+  categoryId: '',
+  imageUrl: '',
+  description: '',
+  tags: []
+})
 
 const headers = [
   { title: 'Image', key: 'image' },
@@ -22,79 +31,117 @@ const headers = [
   { title: 'Actions', key: 'actions', align: 'end' }
 ]
 
-async function loadCats() {
-  const { data } = await api.get('/api/categories?activeOnly=true')
+const rules = { required: v => !!String(v).trim() || 'Required' }
+
+const categoryOptions = computed(() =>
+  categories.value.map(c => ({ title: c.name, value: c._id }))
+)
+
+async function loadCats () {
+  const { data } = await api.get('/categories?activeOnly=true')
   categories.value = data
 }
-
-async function load() {
+async function load () {
   loading.value = true
   try {
     const params = new URLSearchParams()
     if (catFilter.value !== 'ALL') params.set('categoryId', catFilter.value)
-    params.set('q', q.value || '')
-    params.set('activeOnly', 'false')
-    const { data } = await api.get(`/api/foods?${params.toString()}`)
+    if (q.value) params.set('q', q.value)
+    params.set('activeOnly', 'false') // admins see everything
+    const { data } = await api.get(`/foods?${params.toString()}`)
     rows.value = data
   } finally {
     loading.value = false
   }
 }
-
 const filtered = computed(() => rows.value)
 
-function openCreate() {
+function openCreate () {
   editing.value = null
   form.value = { name: '', categoryId: '', imageUrl: '', description: '', tags: [] }
   dialog.value = true
 }
-function openEdit(r) {
+function openEdit (r) {
   editing.value = r
-  form.value = { name: r.name, categoryId: r.categoryId?._id || r.categoryId, imageUrl: r.imageUrl, description: r.description, tags: r.tags || [] }
+  form.value = {
+    name: r.name,
+    categoryId: r.categoryId?._id || r.categoryId || '',
+    imageUrl: r.imageUrl || '',
+    description: r.description || '',
+    tags: Array.isArray(r.tags) ? r.tags : []
+  }
   dialog.value = true
 }
-async function save() {
-  if (!form.value.name || !form.value.categoryId) return
-  if (editing.value) {
-    const { data } = await api.put(`/api/foods/${editing.value._id}`, form.value)
-    patchRow(data)
-  } else {
-    const { data } = await api.post('/api/foods', form.value)
-    rows.value.unshift(data)
+async function save () {
+  const ok = await formRef.value?.validate()
+  if (!ok?.valid) return
+  const payload = {
+    name: form.value.name.trim(),
+    categoryId: form.value.categoryId,
+    imageUrl: form.value.imageUrl || '',
+    description: form.value.description || '',
+    tags: Array.isArray(form.value.tags) ? form.value.tags : []
   }
-  dialog.value = false
+  try {
+    if (editing.value) {
+      const { data } = await api.put(`/foods/${editing.value._id}`, payload)
+      patchRow(data)
+    } else {
+      const { data } = await api.post('/foods', payload)
+      rows.value.unshift(data)
+    }
+    dialog.value = false
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Save failed')
+  }
 }
-
-function patchRow(data) {
+function patchRow (data) {
   const i = rows.value.findIndex(r => r._id === data._id)
   if (i !== -1) rows.value[i] = data
 }
-
-async function removeOne(r) {
+async function removeOne (r) {
   if (!confirm(`Delete "${r.name}"?`)) return
-  await api.delete(`/api/foods/${r._id}`)
-  rows.value = rows.value.filter(x => x._id !== r._id)
+  try {
+    await api.delete(`/foods/${r._id}`)
+    rows.value = rows.value.filter(x => x._id !== r._id)
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Delete failed')
+  }
 }
-
-async function toggle(r, scope, value) {
-  const { data } = await api.patch(`/api/foods/${r._id}/toggle`, { scope, value })
-  patchRow(data)
+async function toggle (r, scope, value) {
+  try {
+    const { data } = await api.patch(`/foods/${r._id}/toggle`, { scope, value })
+    patchRow(data)
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Toggle failed')
+  }
 }
-
-async function setStock(r) {
-  const v = prompt('Set daily limit (empty to unlimited):', r.dailyLimit ?? '')
+async function setStock (r) {
+  const v = prompt('Set daily limit (empty for unlimited):', r.dailyLimit ?? '')
   if (v === null) return
   const dailyLimit = v === '' ? null : Number(v)
-  const { data } = await api.patch(`/api/foods/${r._id}/stock`, { dailyLimit })
-  patchRow(data)
+  try {
+    const { data } = await api.patch(`/foods/${r._id}/stock`, { dailyLimit })
+    patchRow(data)
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Set stock failed')
+  }
 }
+
+onMounted(async () => {
+  await Promise.all([loadCats(), load()])
+})
 </script>
 
 <template>
   <v-card class="rounded-2xl">
+    <!-- Toolbar -->
     <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
       <v-toolbar-title>Foods</v-toolbar-title>
       <template #append>
+        <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="load">
+          <v-icon start>mdi-refresh</v-icon> Refresh
+        </v-btn>
         <v-btn color="white" variant="flat" @click="openCreate">
           <v-icon start>mdi-plus</v-icon> New
         </v-btn>
@@ -102,13 +149,20 @@ async function setStock(r) {
     </v-toolbar>
 
     <div class="pa-4">
+      <!-- Filters -->
       <v-row dense class="mb-3">
         <v-col cols="12" md="5">
-          <v-text-field v-model="q" label="Search foods" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
+          <v-text-field
+            v-model="q"
+            label="Search foods"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            @keyup.enter="load"
+          />
         </v-col>
         <v-col cols="12" md="4">
           <v-select
-            :items="[{title:'All Categories', value:'ALL'}, ...categories.map(c=>({title:c.name, value:c._id}))]"
+            :items="[{title:'All Categories', value:'ALL'}, ...categoryOptions]"
             v-model="catFilter"
             label="Category"
             @update:modelValue="load"
@@ -121,6 +175,7 @@ async function setStock(r) {
         </v-col>
       </v-row>
 
+      <!-- Table -->
       <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl">
         <template #item.image="{ item }">
           <v-avatar size="36" rounded="lg">
@@ -134,22 +189,22 @@ async function setStock(r) {
 
         <template #item.avail="{ item }">
           <div class="d-flex ga-2 justify-center">
+            <!-- Global -->
             <v-switch
-              inset
-              color="primary"
+              inset color="primary" hide-details
               :model-value="item.isActiveGlobal"
-              @change="toggle(item, 'GLOBAL', $event)"
-              hide-details
+              @update:modelValue="val => toggle(item, 'GLOBAL', val)"
               label="Global"
             />
+
+            <!-- Kitchen -->
             <v-switch
-              inset
-              color="deep-purple"
+              inset color="deep-purple" hide-details
               :model-value="item.isActiveKitchen"
-              @change="toggle(item, 'KITCHEN', $event)"
-              hide-details
+              @update:modelValue="val => toggle(item, 'KITCHEN', val)"
               label="Kitchen"
             />
+
           </div>
         </template>
 
@@ -183,34 +238,33 @@ async function setStock(r) {
       </v-data-table>
     </div>
 
+    <!-- Dialog -->
     <v-dialog v-model="dialog" max-width="640">
       <v-card>
         <v-card-title>{{ editing ? 'Edit Food' : 'New Food' }}</v-card-title>
         <v-card-text>
-          <v-row dense>
-            <v-col cols="12" md="6">
-              <v-text-field v-model="form.name" label="Name" />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-select
-                :items="categories.map(c=>({title:c.name, value:c._id}))"
-                v-model="form.categoryId"
-                label="Category"
-              />
-            </v-col>
-            <v-col cols="12">
-              <v-text-field v-model="form.imageUrl" label="Image URL" />
-            </v-col>
-            <v-col cols="12">
-              <v-textarea v-model="form.description" label="Description" rows="3" />
-            </v-col>
-            <v-col cols="12">
-              <v-combobox v-model="form.tags" multiple chips label="Tags (spicy, vegan, ...)" />
-            </v-col>
-          </v-row>
+          <v-form ref="formRef">
+            <v-row dense>
+              <v-col cols="12" md="6">
+                <v-text-field v-model="form.name" label="Name" :rules="[rules.required]" />
+              </v-col>
+              <v-col cols="12" md="6">
+                <v-select :items="categoryOptions" v-model="form.categoryId" label="Category" :rules="[rules.required]" />
+              </v-col>
+              <v-col cols="12">
+                <v-text-field v-model="form.imageUrl" label="Image URL" />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.description" label="Description" rows="3" />
+              </v-col>
+              <v-col cols="12">
+                <v-combobox v-model="form.tags" multiple chips label="Tags (spicy, vegan, ...)" />
+              </v-col>
+            </v-row>
+          </v-form>
         </v-card-text>
         <v-card-actions>
-          <v-spacer/>
+          <v-spacer />
           <v-btn variant="text" @click="dialog=false">Cancel</v-btn>
           <v-btn color="primary" @click="save">
             <v-icon start>mdi-content-save</v-icon> Save
@@ -218,6 +272,9 @@ async function setStock(r) {
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- FAB: always-visible Add button -->
+    <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
   </v-card>
 </template>
 

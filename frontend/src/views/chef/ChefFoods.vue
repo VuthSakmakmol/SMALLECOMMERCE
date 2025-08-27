@@ -107,14 +107,13 @@ onMounted(async () => {
             <v-switch
               inset color="primary" hide-details
               :model-value="item.isActiveGlobal"
-              @change="toggle(item, 'GLOBAL', $event)"
-              label="Global"
+              @update:modelValue="val => toggleOne(item, 'GLOBAL', val)"
             />
+
             <v-switch
               inset color="deep-purple" hide-details
               :model-value="item.isActiveKitchen"
-              @change="toggle(item, 'KITCHEN', $event)"
-              label="Kitchen"
+              @update:modelValue="val => toggleOne(item, 'KITCHEN', val)"
             />
           </div>
         </template>

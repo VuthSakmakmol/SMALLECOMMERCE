@@ -9,8 +9,8 @@ const foods = ref([])
 const q = ref('')
 const dialog = ref(false)
 const editing = ref(null)
+const formRef = ref(null)
 
-// package form
 const form = ref({
   name: '',
   price: 0,
@@ -20,17 +20,23 @@ const form = ref({
 })
 
 const headers = [
-  { title: 'Image', key: 'image' },
+  { title: 'Image',   key: 'image' },
   { title: 'Package', key: 'name' },
-  { title: 'Items', key: 'items' },
-  { title: 'Price', key: 'price', align: 'end' },
-  { title: 'Active', key: 'active', align: 'center' },
+  { title: 'Items',   key: 'items' },
+  { title: 'Price',   key: 'price', align: 'end' },
+  { title: 'Active',  key: 'active', align: 'center' },
   { title: 'Actions', key: 'actions', align: 'end' }
 ]
 
 const foodOptions = computed(() =>
   foods.value.map(f => ({ title: f.name, value: f._id }))
 )
+
+const rules = {
+  required: v => !!String(v).trim() || 'Required',
+  nonneg:   v => Number(v) >= 0 || 'Must be ≥ 0',
+  hasItems: () => (form.value.items.length > 0) || 'Add at least one item'
+}
 
 function resetForm () {
   form.value = { name: '', price: 0, imageUrl: '', description: '', items: [] }
@@ -41,6 +47,7 @@ function openCreate () {
   resetForm()
   dialog.value = true
 }
+
 function openEdit (r) {
   editing.value = r
   form.value = {
@@ -54,13 +61,14 @@ function openEdit (r) {
 }
 
 async function save () {
-  // minimal validation
-  if (!form.value.name || form.value.price < 0 || form.value.items.length === 0) return
+  const ok = await formRef.value?.validate()
+  if (!ok?.valid || form.value.items.length === 0) return
+
   if (editing.value) {
-    const { data } = await api.put(`/api/packages/${editing.value._id}`, form.value)
+    const { data } = await api.put(`/packages/${editing.value._id}`, form.value)
     upsertRow(data)
   } else {
-    const { data } = await api.post('/api/packages', form.value)
+    const { data } = await api.post('/packages', form.value)
     rows.value.unshift(data)
   }
   dialog.value = false
@@ -73,18 +81,18 @@ function upsertRow (pkg) {
 }
 
 async function toggleActive (r, value) {
-  const { data } = await api.patch(`/api/packages/${r._id}/toggle`, { value })
+  const { data } = await api.patch(`/packages/${r._id}/toggle`, { value })
   upsertRow(data)
 }
 
 async function removeOne (r) {
   if (!confirm(`Delete package "${r.name}"?`)) return
-  await api.delete(`/api/packages/${r._id}`)
+  await api.delete(`/packages/${r._id}`)
   rows.value = rows.value.filter(x => x._id !== r._id)
 }
 
 async function loadFoods () {
-  const { data } = await api.get('/api/foods?activeOnly=true')
+  const { data } = await api.get('/foods?activeOnly=true')
   foods.value = data
 }
 async function load () {
@@ -92,7 +100,7 @@ async function load () {
   try {
     const params = new URLSearchParams()
     if (q.value.trim()) params.set('q', q.value.trim())
-    const { data } = await api.get(`/api/packages?${params.toString()}`)
+    const { data } = await api.get(`/packages?${params.toString()}`)
     rows.value = data
   } finally {
     loading.value = false
@@ -116,10 +124,11 @@ onMounted(async () => {
 
 <template>
   <v-card class="rounded-2xl">
+    <!-- Toolbar -->
     <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
       <v-toolbar-title>Packages (Workshop)</v-toolbar-title>
       <template #append>
-        <v-btn class="mr-2" color="white" variant="flat" @click="load">
+        <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
         </v-btn>
         <v-btn color="white" variant="flat" @click="openCreate">
@@ -128,10 +137,17 @@ onMounted(async () => {
       </template>
     </v-toolbar>
 
+    <!-- Filters -->
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="6">
-          <v-text-field v-model="q" label="Search package" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
+          <v-text-field
+            v-model="q"
+            label="Search package"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            @keyup.enter="load"
+          />
         </v-col>
         <v-col cols="12" md="3">
           <v-btn :loading="loading" @click="load" block>
@@ -140,6 +156,7 @@ onMounted(async () => {
         </v-col>
       </v-row>
 
+      <!-- Table -->
       <v-data-table :headers="headers" :items="rows" :items-per-page="10" class="rounded-xl">
         <template #item.image="{ item }">
           <v-avatar size="40" rounded="lg">
@@ -182,61 +199,66 @@ onMounted(async () => {
       </v-data-table>
     </div>
 
+    <!-- Dialog -->
     <v-dialog v-model="dialog" max-width="720">
       <v-card>
         <v-card-title>{{ editing ? 'Edit Package' : 'New Package' }}</v-card-title>
         <v-card-text>
-          <v-row dense>
-            <v-col cols="12" md="6">
-              <v-text-field v-model="form.name" label="Name" />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field v-model.number="form.price" type="number" min="0" label="Price" />
-            </v-col>
-            <v-col cols="12">
-              <v-text-field v-model="form.imageUrl" label="Image URL" />
-            </v-col>
-            <v-col cols="12">
-              <v-textarea v-model="form.description" rows="3" label="Description" />
-            </v-col>
+          <v-form ref="formRef">
+            <v-row dense>
+              <v-col cols="12" md="6">
+                <v-text-field v-model="form.name" label="Name" :rules="[rules.required]" />
+              </v-col>
+              <v-col cols="12" md="6">
+                <v-text-field v-model.number="form.price" type="number" min="0" label="Price" :rules="[rules.nonneg]" />
+              </v-col>
+              <v-col cols="12">
+                <v-text-field v-model="form.imageUrl" label="Image URL" />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.description" rows="3" label="Description" />
+              </v-col>
 
-            <v-col cols="12">
-              <div class="d-flex align-center justify-space-between mb-2">
-                <h3 class="text-subtitle-1">Items</h3>
-                <v-btn size="small" variant="tonal" color="primary" @click="addLine">
-                  <v-icon start>mdi-plus</v-icon> Add Item
-                </v-btn>
-              </div>
+              <v-col cols="12">
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <h3 class="text-subtitle-1">Items</h3>
+                  <v-btn size="small" variant="tonal" color="primary" @click="addLine">
+                    <v-icon start>mdi-plus</v-icon> Add Item
+                  </v-btn>
+                </div>
 
-              <v-table density="comfortable" class="rounded-lg">
-                <thead>
-                  <tr>
-                    <th style="width:60%">Food</th>
-                    <th style="width:20%">Qty</th>
-                    <th style="width:20%"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(it, idx) in form.items" :key="idx">
-                    <td>
-                      <v-select :items="foodOptions" v-model="it.foodId" placeholder="Select food" />
-                    </td>
-                    <td>
-                      <v-text-field v-model.number="it.qty" type="number" min="1" />
-                    </td>
-                    <td class="text-right">
-                      <v-btn icon size="small" color="red" variant="text" @click="removeLine(idx)">
-                        <v-icon>mdi-delete</v-icon>
-                      </v-btn>
-                    </td>
-                  </tr>
-                  <tr v-if="form.items.length === 0">
-                    <td colspan="3" class="text-center text-medium-emphasis">No items yet.</td>
-                  </tr>
-                </tbody>
-              </v-table>
-            </v-col>
-          </v-row>
+                <v-table density="comfortable" class="rounded-lg">
+                  <thead>
+                    <tr>
+                      <th style="width:60%">Food</th>
+                      <th style="width:20%">Qty</th>
+                      <th style="width:20%"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(it, idx) in form.items" :key="idx">
+                      <td>
+                        <v-select :items="foodOptions" v-model="it.foodId" placeholder="Select food" />
+                      </td>
+                      <td>
+                        <v-text-field v-model.number="it.qty" type="number" min="1" />
+                      </td>
+                      <td class="text-right">
+                        <v-btn icon size="small" color="red" variant="text" @click="removeLine(idx)">
+                          <v-icon>mdi-delete</v-icon>
+                        </v-btn>
+                      </td>
+                    </tr>
+                    <tr v-if="form.items.length === 0">
+                      <td colspan="3" class="text-center text-medium-emphasis">No items yet.</td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                <!-- enforce at least one item -->
+                <div class="text-error mt-2" v-if="form.items.length === 0">Add at least one item</div>
+              </v-col>
+            </v-row>
+          </v-form>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -247,5 +269,8 @@ onMounted(async () => {
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- FAB so "Add" is always visible -->
+    <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
   </v-card>
 </template>

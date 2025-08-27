@@ -2,28 +2,20 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/utils/api'
 
-/* ───────────────────────────────
-   State
-──────────────────────────────── */
 const loading = ref(false)
-const rows = ref([])     // server data
+const rows = ref([])
 const q = ref('')
 
 const dialog = ref(false)
 const editing = ref(null)
 const formRef = ref(null)
-const form = ref({ name: '', parentId: null, order: 0 })
+const form = ref({ name: '' })
 
-/* ───────────────────────────────
-   Table
-──────────────────────────────── */
 const headers = [
   { title: 'Name',   key: 'name' },
   { title: 'Slug',   key: 'slug' },
-  { title: 'Parent', key: 'parent' },
-  { title: 'Order',  key: 'order', align: 'center' },
   { title: 'Active', key: 'active', align: 'center' },
-  { title: 'Actions', key: 'actions', align: 'end', sortable: false },
+  { title: 'Actions', key: 'actions', align: 'end', sortable: false }
 ]
 
 const filtered = computed(() => {
@@ -35,9 +27,6 @@ const filtered = computed(() => {
   )
 })
 
-/* ───────────────────────────────
-   CRUD
-──────────────────────────────── */
 async function load () {
   loading.value = true
   try {
@@ -52,29 +41,20 @@ async function load () {
 
 function openCreate () {
   editing.value = null
-  form.value = { name: '', parentId: null, order: nextOrder() }
+  form.value = { name: '' }
   dialog.value = true
 }
 
 function openEdit (r) {
   editing.value = r
-  form.value = {
-    name: r.name,
-    parentId: r.parentId || null,
-    order: r.order ?? 0,
-  }
+  form.value = { name: r.name }
   dialog.value = true
 }
 
 async function save () {
   const ok = await formRef.value?.validate()
   if (!ok?.valid) return
-
-  const payload = {
-    name: form.value.name.trim(),
-    parentId: form.value.parentId || null,
-    order: Number(form.value.order || 0),
-  }
+  const payload = { name: form.value.name.trim() }
 
   if (editing.value) {
     const { data } = await api.put(`/categories/${editing.value._id}`, payload)
@@ -108,35 +88,13 @@ async function removeOne (r) {
   }
 }
 
-/* ───────────────────────────────
-   Helpers
-──────────────────────────────── */
-function nextOrder () {
-  if (rows.value.length === 0) return 0
-  const max = Math.max(...rows.value.map(r => Number(r.order || 0)))
-  return (isFinite(max) ? max : 0) + 1
-}
-
-function parentName (row) {
-  return rows.value.find(r => r._id === row.parentId)?.name || '—'
-}
-
-const parentOptions = computed(() => [
-  { title: '— None —', value: null },
-  ...rows.value.map(r => ({ title: r.name, value: r._id })),
-])
-
-const rules = {
-  required: v => !!String(v).trim() || 'Required',
-  nonneg:   v => Number(v) >= 0 || 'Must be ≥ 0',
-}
+const rules = { required: v => !!String(v).trim() || 'Required' }
 
 onMounted(load)
 </script>
 
 <template>
   <v-card class="rounded-2xl">
-    <!-- Toolbar (new style: Refresh + New) -->
     <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
       <v-toolbar-title>Categories</v-toolbar-title>
       <template #append>
@@ -149,17 +107,10 @@ onMounted(load)
       </template>
     </v-toolbar>
 
-    <!-- Filters -->
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="6">
-          <v-text-field
-            v-model="q"
-            label="Search category"
-            prepend-inner-icon="mdi-magnify"
-            clearable
-            @keyup.enter="load"
-          />
+          <v-text-field v-model="q" label="Search category" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
         </v-col>
         <v-col cols="12" md="3">
           <v-btn :loading="loading" @click="load" block>
@@ -168,32 +119,17 @@ onMounted(load)
         </v-col>
       </v-row>
 
-      <!-- Table -->
-      <v-data-table
-        :headers="headers"
-        :items="filtered"
-        :items-per-page="10"
-        class="rounded-xl"
-      >
-        <template #item.parent="{ item }">
-          {{ parentName(item) }}
-        </template>
-
-        <template #item.order="{ item }">
-          <div class="text-center">{{ item.order ?? 0 }}</div>
-        </template>
-
+      <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl">
         <template #item.active="{ item }">
           <div class="d-flex justify-center">
             <v-switch
               inset
               :model-value="item.isActive"
               hide-details
-              @change="toggle(item, $event)"
+              @update:modelValue="val => toggle(item, val)"
             />
           </div>
         </template>
-
         <template #item.actions="{ item }">
           <div class="d-flex ga-2 justify-end">
             <v-btn size="small" variant="tonal" color="primary" @click="openEdit(item)">
@@ -207,44 +143,14 @@ onMounted(load)
       </v-data-table>
     </div>
 
-    <!-- Dialog -->
-    <v-dialog v-model="dialog" max-width="560">
+    <v-dialog v-model="dialog" max-width="480">
       <v-card>
         <v-card-title>{{ editing ? 'Edit Category' : 'New Category' }}</v-card-title>
-
         <v-card-text>
           <v-form ref="formRef">
-            <v-row dense>
-              <v-col cols="12">
-                <v-text-field
-                  v-model="form.name"
-                  label="Name"
-                  :rules="[rules.required]"
-                  autofocus
-                />
-              </v-col>
-
-              <v-col cols="12" md="6">
-                <v-select
-                  :items="parentOptions"
-                  v-model="form.parentId"
-                  label="Parent"
-                />
-              </v-col>
-
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model.number="form.order"
-                  type="number"
-                  min="0"
-                  label="Order"
-                  :rules="[rules.nonneg]"
-                />
-              </v-col>
-            </v-row>
+            <v-text-field v-model="form.name" label="Name" :rules="[rules.required]" autofocus />
           </v-form>
         </v-card-text>
-
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="dialog=false">Cancel</v-btn>
@@ -254,12 +160,8 @@ onMounted(load)
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Always-visible “Add” button -->
+    <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
   </v-card>
-  <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
-
 </template>
-
-<style scoped>
-/* small visual tweaks */
-.v-switch .v-label { font-size: 12px }
-</style>
