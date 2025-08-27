@@ -155,6 +155,8 @@ onMounted(async () => {
           <v-text-field
             v-model="q"
             label="Search foods"
+            variant="outlined"
+            density="compact"
             prepend-inner-icon="mdi-magnify"
             clearable
             @keyup.enter="load"
@@ -164,6 +166,8 @@ onMounted(async () => {
           <v-select
             :items="[{title:'All Categories', value:'ALL'}, ...categoryOptions]"
             v-model="catFilter"
+            density="compact"
+            variant="outlined"
             label="Category"
             @update:modelValue="load"
           />

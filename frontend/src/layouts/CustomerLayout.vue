@@ -11,6 +11,7 @@ const auth = useAuth()
 
 const items = [
   { to: '/customer',            text: 'Browse',     icon: 'mdi-store' },
+  { to: '/customer/packages',    text: 'Packages',   icon: 'mdi-store'},
   { to: '/customer/categories', text: 'Categories', icon: 'mdi-shape' },
   { to: '/customer/history',    text: 'History',    icon: 'mdi-history' },
 ]

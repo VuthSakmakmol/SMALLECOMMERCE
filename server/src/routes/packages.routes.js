@@ -1,10 +1,11 @@
+// routes/package.routes.js
 const router = require('express').Router()
 const { body, param, query } = require('express-validator')
 const { authenticate, authorize } = require('../middleware/auth')
 const { validate } = require('../middleware/validate')
-const ctrl = require('../controllers/package.controller') // make sure this path matches
+const ctrl = require('../controllers/package.controller')
 
-// Public list + get (so Workshop/Packages can be shown to customers)
+// Public list + get
 router.get('/',
   [
     query('activeOnly').optional().isIn(['true','false']),
@@ -20,12 +21,11 @@ router.get('/:id',
   ctrl.getOne
 )
 
-// Create package (ADMIN only)
+// Create (ADMIN + CHEF)
 router.post('/',
-  authenticate, authorize('ADMIN'),
+  authenticate, authorize('ADMIN','CHEF'),
   [
-    body('name').isString().trim().notEmpty(),
-    body('price').isFloat({ min: 0 }),
+    body('name').isIn(['Individual','Group','Workshop']),
     body('description').optional().isString(),
     body('imageUrl').optional().isString(),
     body('items').isArray({ min: 1 }),
@@ -36,13 +36,12 @@ router.post('/',
   ctrl.create
 )
 
-// Update package (ADMIN)
+// Update (ADMIN + CHEF)
 router.put('/:id',
-  authenticate, authorize('ADMIN'),
+  authenticate, authorize('ADMIN','CHEF'),
   [
     param('id').isMongoId(),
-    body('name').optional().isString().trim().notEmpty(),
-    body('price').optional().isFloat({ min: 0 }),
+    body('name').optional().isIn(['Individual','Group','Workshop']),
     body('description').optional().isString(),
     body('imageUrl').optional().isString(),
     body('isActive').optional().isBoolean(),
@@ -54,9 +53,9 @@ router.put('/:id',
   ctrl.update
 )
 
-// Toggle active (ADMIN)
+// Toggle Active (ADMIN + CHEF)
 router.patch('/:id/toggle',
-  authenticate, authorize('ADMIN'),
+  authenticate, authorize('ADMIN','CHEF'),
   [
     param('id').isMongoId(),
     body('value').isBoolean()
@@ -65,9 +64,9 @@ router.patch('/:id/toggle',
   ctrl.toggle
 )
 
-// Delete package (ADMIN)
+// Delete (ADMIN + CHEF)
 router.delete('/:id',
-  authenticate, authorize('ADMIN'),
+  authenticate, authorize('ADMIN','CHEF'),
   [ param('id').isMongoId() ],
   validate,
   ctrl.removeOne

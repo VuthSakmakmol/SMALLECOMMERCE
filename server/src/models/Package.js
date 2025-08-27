@@ -1,3 +1,4 @@
+// models/Package.js
 const mongoose = require('mongoose')
 
 const packageItemSchema = new mongoose.Schema({
@@ -6,12 +7,18 @@ const packageItemSchema = new mongoose.Schema({
 }, { _id: false })
 
 const packageSchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
+  // Restrict to 3 types and also make name unique so each type exists once
+  name: { 
+    type: String, 
+    required: true, 
+    enum: ['Individual', 'Group', 'Workshop'],
+    unique: true,
+    trim: true
+  },
   slug: { type: String, unique: true, index: true },
   description: { type: String, default: '' },
   imageUrl: { type: String, default: '' },
-  items: { type: [packageItemSchema], default: [] },   // bundle contents
-  price: { type: Number, min: 0, required: true },     // fixed package price
+  items: { type: [packageItemSchema], default: [] }, // required in controller
   isActive: { type: Boolean, default: true },
 }, { timestamps: true })
 

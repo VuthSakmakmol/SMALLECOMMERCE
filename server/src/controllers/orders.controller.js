@@ -1,105 +1,65 @@
 // server/src/controllers/orders.controller.js
-const dayjs = require('dayjs')
-const Order = require('../models/Order')
-const Food = require('../models/Food')
+const dayjs   = require('dayjs')
+const Order   = require('../models/Order')
+const Food    = require('../models/Food')
 const Package = require('../models/Package')
 
-// statuses used by your routes/UI
+/* ───────────────────────────────
+   Constants
+──────────────────────────────── */
 const STATUS = {
-  PLACED: 'PLACED',
-  ACCEPTED: 'ACCEPTED',
-  COOKING: 'COOKING',
-  READY: 'READY',
+  PLACED:    'PLACED',
+  ACCEPTED:  'ACCEPTED',
+  COOKING:   'COOKING',
+  READY:     'READY',
   DELIVERED: 'DELIVERED',
-  CANCELED: 'CANCELED'
+  CANCELED:  'CANCELED',
 }
 
 const ORDER_TYPES = ['INDIVIDUAL', 'GROUP', 'WORKSHOP']
-const todayStr = () => dayjs().format('YYYY-MM-DD')
 
 /* ───────────────────────────────
-   Stock helpers
-──────────────────────────────── */
-async function applyStockForFood (foodId, qty, { consume = false } = {}) {
-  const food = await Food.findById(foodId)
-  if (!food) return { ok: false, reason: 'NOT_FOUND' }
-
-  // unlimited
-  if (food.dailyLimit == null) return { ok: true }
-
-  // reset if day changed
-  if (food.stockDate !== todayStr()) {
-    food.stockDate = todayStr()
-    food.stockRemaining = food.dailyLimit
-  }
-
-  if ((food.stockRemaining ?? 0) < qty) {
-    return { ok: false, reason: 'OUT_OF_STOCK', remaining: food.stockRemaining ?? 0 }
-  }
-
-  if (consume) {
-    food.stockRemaining -= qty
-    await food.save()
-  }
-  return { ok: true, remaining: food.stockRemaining }
-}
-
-async function explodePackage (pkgDoc, qty) {
-  // pkg.items: [{ foodId, qty }]
-  return (pkgDoc.items || []).map(it => ({
-    foodId: it.foodId,
-    qtyToConsume: (Number(it.qty) || 0) * (Number(qty) || 0)
-  }))
-}
-
-function snapshotFoodLine (foodDoc, qty, unitPrice) {
-  return {
-    kind: 'FOOD',
-    foodId: foodDoc._id,
-    name: foodDoc.name,
-    imageUrl: foodDoc.imageUrl || '',
-    qty: Number(qty),
-    unitPrice: Number(unitPrice) // NOTE: your Food model has no price; default 0 unless provided
-  }
-}
-
-function snapshotPackageLine (pkgDoc, qty) {
-  return {
-    kind: 'PACKAGE',
-    packageId: pkgDoc._id,
-    name: pkgDoc.name,
-    imageUrl: pkgDoc.imageUrl || '',
-    qty: Number(qty),
-    unitPrice: Number(pkgDoc.price || 0)
-  }
-}
-
-/* ───────────────────────────────
-   Socket helper
+   Socket helper (optional)
 ──────────────────────────────── */
 function emitOrder (req, orderObj, event) {
   const io = req.app.get('io')
   if (!io) return
-
-  io.to('room:chef').emit(event, orderObj)
   io.to('room:admin').emit(event, orderObj)
-  if (orderObj.customerId) io.to(`room:customer:${orderObj.customerId}`).emit(event, orderObj)
+  io.to('room:chef:default').emit(event, orderObj)   // matches your join('room:chef:${kitchenId||default}')
+  if (orderObj.customerId) {
+    io.to(`room:customer:${orderObj.customerId}`).emit(event, orderObj)
+  }
   io.to(`room:order:${orderObj._id}`).emit(event, orderObj)
-  if (orderObj.groupKey) io.to(`room:group:${orderObj.groupKey}`).emit(event, orderObj)
 }
 
 /* ───────────────────────────────
    Controllers
 ──────────────────────────────── */
 
-// GET /orders?status=&type=&groupKey=
+// GET /orders?status=&type=&groupKey=&q=
 async function list (req, res, next) {
   try {
-    const { status, type, groupKey } = req.query
+    const { status, type, groupKey, q } = req.query
     const filter = {}
-    if (status) filter.status = status
+
+    // ACTIVE = anything not finished
+    if (status === 'ACTIVE') {
+      filter.status = { $nin: [STATUS.DELIVERED, STATUS.CANCELED] }
+    } else if (status) {
+      filter.status = status
+    }
+
     if (type) filter.type = type
     if (groupKey) filter.groupKey = groupKey
+
+    if (q && String(q).trim()) {
+      const rx = new RegExp(String(q).trim(), 'i')
+      filter.$or = [
+        { groupKey: rx },
+        { notes: rx },
+        { 'items.name': rx },
+      ]
+    }
 
     const rows = await Order.find(filter).sort({ createdAt: -1 }).lean()
     res.json(rows)
@@ -116,109 +76,60 @@ async function getOne (req, res, next) {
 }
 
 // POST /orders
-// body: { type, groupKey?, customerId?, customerName?, phone?, notes?, items:[{ kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty, unitPrice? }] }
+// body: { type?, groupKey?, notes?, items:[{kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty}] }
 async function create (req, res, next) {
   try {
-    const {
-      type = 'INDIVIDUAL',
-      groupKey = null,
-      customerId = null,
-      customerName = '',
-      phone = '',
-      notes = '',
-      items = []
-    } = req.body
+    const authedId = req.user?._id || req.user?.id
+    if (!authedId) return res.status(401).json({ message: 'Unauthenticated' })
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: 'Order requires at least one item' })
-    }
+    const type = (req.body.type || 'INDIVIDUAL').toUpperCase()
     if (!ORDER_TYPES.includes(type)) {
       return res.status(400).json({ message: 'Invalid order type' })
     }
 
-    const lines = []
-    const consumptions = []
+    const items = Array.isArray(req.body.items) ? req.body.items : []
+    if (!items.length) return res.status(400).json({ message: 'At least one item is required' })
 
+    // Normalize + validate items; snapshot names so lists are stable
+    const prepared = []
     for (const it of items) {
-      const qty = Number(it.qty || 0)
-      if (qty <= 0) return res.status(400).json({ message: 'Invalid qty in items' })
+      const kind = String(it.kind || '').toUpperCase()
+      const qty  = Math.max(1, parseInt(it.qty, 10) || 1)
 
-      if (it.kind === 'FOOD') {
-        const food = await Food.findById(it.foodId)
-        if (!food) return res.status(400).json({ message: 'Food not found' })
-
-        const check = await applyStockForFood(food._id, qty, { consume: false })
-        if (!check.ok) {
-          return res.status(409).json({ message: `Out of stock for ${food.name}`, remaining: check.remaining })
-        }
-
-        const unitPrice = it.unitPrice != null ? Number(it.unitPrice) : Number(food.price || 0)
-        lines.push(snapshotFoodLine(food, qty, unitPrice))
-        consumptions.push({ foodId: food._id, qty })
-      } else if (it.kind === 'PACKAGE') {
-        const pkg = await Package.findById(it.packageId)
-        if (!pkg || pkg.isActive === false) {
-          return res.status(400).json({ message: 'Package not found or inactive' })
-        }
-        const parts = await explodePackage(pkg, qty)
-        for (const p of parts) {
-          const ok = await applyStockForFood(p.foodId, p.qtyToConsume, { consume: false })
-          if (!ok.ok) {
-            const f = await Food.findById(p.foodId).lean()
-            return res.status(409).json({ message: `Out of stock for ${f?.name || 'item in package'}`, remaining: ok.remaining })
-          }
-        }
-        lines.push(snapshotPackageLine(pkg, qty))
-        consumptions.push(...parts.map(p => ({ foodId: p.foodId, qty: p.qtyToConsume })))
+      if (kind === 'FOOD') {
+        if (!it.foodId) return res.status(400).json({ message: 'foodId is required for FOOD item' })
+        const f = await Food.findById(it.foodId).select('_id name')
+        if (!f) return res.status(400).json({ message: 'Food not found', id: it.foodId })
+        prepared.push({ kind: 'FOOD', foodId: f._id, name: f.name, qty, unitPrice: 0 })
+      } else if (kind === 'PACKAGE') {
+        if (!it.packageId) return res.status(400).json({ message: 'packageId is required for PACKAGE item' })
+        const p = await Package.findById(it.packageId).select('_id name')
+        if (!p) return res.status(400).json({ message: 'Package not found', id: it.packageId })
+        prepared.push({ kind: 'PACKAGE', packageId: p._id, name: p.name, qty, unitPrice: 0 })
       } else {
-        return res.status(400).json({ message: 'Invalid item kind (must be FOOD or PACKAGE)' })
+        return res.status(400).json({ message: 'Invalid item kind', kind: it.kind })
       }
     }
 
-    // totals
-    const subtotal = lines.reduce((s, l) => s + Number(l.unitPrice) * Number(l.qty), 0)
-    const discount = 0
-    const serviceFee = 0
-    const grandTotal = subtotal - discount + serviceFee
-
-    // create order
-    const order = await Order.create({
+    const doc = await Order.create({
       type,
-      groupKey,
-      customerId,
-      customerName,
-      phone,
-      items: lines,
-      notes,
-      subtotal,
-      discount,
-      serviceFee,
-      grandTotal,
-      status: STATUS.PLACED,
-      createdBy: req.user?._id || null,
-      updatedBy: req.user?._id || null
+      status: STATUS.PLACED,                         // IMPORTANT: Chef/Admin expect this
+      customerId: authedId,
+      groupKey: type === 'GROUP' ? (req.body.groupKey || null) : null,
+      notes: req.body.notes || '',
+      items: prepared,
+      grandTotal: 0,                                 // free mode
+      createdBy: authedId,
+      updatedBy: authedId,
     })
 
-    // consume stock
-    for (const c of consumptions) {
-      const r = await applyStockForFood(c.foodId, c.qty, { consume: true })
-      if (!r.ok) {
-        order.status = STATUS.CANCELED
-        order.canceledAt = new Date()
-        await order.save()
-        return res.status(409).json({ message: 'Stock race condition, order auto-canceled' })
-      }
-    }
-
-    emitOrder(req, order.toObject(), 'order:new')
+    const order = doc.toObject()
+    emitOrder(req, order, 'order:new')
     res.status(201).json(order)
   } catch (e) { next(e) }
 }
 
-/* ───────────────────────────────
-   Status transitions
-──────────────────────────────── */
-// PATCH /orders/:id/accept
+// PATCH /orders/:id/accept (CHEF/ADMIN)
 async function accept (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
@@ -235,7 +146,7 @@ async function accept (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/start
+// PATCH /orders/:id/start (CHEF/ADMIN)
 async function start (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
@@ -252,12 +163,12 @@ async function start (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/ready
+// PATCH /orders/:id/ready (CHEF/ADMIN)
 async function ready (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Order not found' })
-    if (order.status !== STATUS.COOKING && order.status !== STATUS.ACCEPTED) {
+    if (![STATUS.COOKING, STATUS.ACCEPTED].includes(order.status)) {
       return res.status(400).json({ message: 'Order must be COOKING/ACCEPTED to mark READY' })
     }
     order.status = STATUS.READY
@@ -269,7 +180,7 @@ async function ready (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/deliver
+// PATCH /orders/:id/deliver (any authed; customers only their own)
 async function deliver (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
@@ -277,6 +188,13 @@ async function deliver (req, res, next) {
     if (order.status !== STATUS.READY) {
       return res.status(400).json({ message: 'Order must be READY to deliver' })
     }
+
+    const role = req.user?.role
+    const uid  = String(req.user?._id || '')
+    if (role === 'CUSTOMER' && String(order.customerId) !== uid) {
+      return res.status(403).json({ message: 'Customers can only deliver their own orders' })
+    }
+
     order.status = STATUS.DELIVERED
     order.deliveredAt = new Date()
     order.updatedBy = req.user?._id || null
@@ -286,7 +204,7 @@ async function deliver (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/cancel
+// PATCH /orders/:id/cancel (CHEF/ADMIN)
 async function cancel (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
@@ -311,5 +229,5 @@ module.exports = {
   start,
   ready,
   deliver,
-  cancel
+  cancel,
 }

@@ -12,7 +12,6 @@ const headers = [
   { title: 'Time',   key: 'createdAt' },
   { title: 'Type',   key: 'type' },
   { title: 'Items',  key: 'items' },
-  { title: 'Total',  key: 'total', align: 'end' },
   { title: 'Status', key: 'status', align: 'center' },
   { title: 'Actions', key: 'actions', align: 'end' }
 ]

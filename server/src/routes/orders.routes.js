@@ -1,3 +1,4 @@
+// server/src/routes/orders.routes.js
 const router = require('express').Router()
 const { body, param, query } = require('express-validator')
 const { authenticate, authorize } = require('../middleware/auth')
@@ -6,17 +7,18 @@ const ctrl = require('../controllers/orders.controller')
 
 /**
  * GET /orders
- * Query filters are optional.
- * ?status=PLACED|ACCEPTED|COOKING|READY|DELIVERED|CANCELED
+ * ?status=ACTIVE|PLACED|ACCEPTED|COOKING|READY|DELIVERED|CANCELED
  * ?type=INDIVIDUAL|GROUP|WORKSHOP
- * ?groupKey=TABLE-1 (or any string you use to group)
+ * ?groupKey=XYZ
+ * ?q=search-text (matches groupKey / notes / item names)
  */
 router.get('/',
   authenticate,
   [
-    query('status').optional().isIn(['PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']),
+    query('status').optional().isIn(['ACTIVE','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']),
     query('type').optional().isIn(['INDIVIDUAL','GROUP','WORKSHOP']),
-    query('groupKey').optional().isString().trim()
+    query('groupKey').optional().isString().trim(),
+    query('q').optional().isString().trim(),
   ],
   validate,
   ctrl.list
@@ -25,9 +27,10 @@ router.get('/',
 /**
  * POST /orders
  * body: {
- *   type: 'INDIVIDUAL'|'GROUP'|'WORKSHOP',
- *   groupKey?, customerId?, customerName?, phone?, notes?,
- *   items: [{ kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty, unitPrice? }]
+ *   type?: 'INDIVIDUAL'|'GROUP'|'WORKSHOP',
+ *   groupKey?: string,
+ *   notes?: string,
+ *   items: [{ kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty }]
  * }
  */
 router.post('/',
@@ -35,16 +38,12 @@ router.post('/',
   [
     body('type').optional().isIn(['INDIVIDUAL','GROUP','WORKSHOP']),
     body('groupKey').optional().isString().trim(),
-    body('customerId').optional().isString().trim(),
-    body('customerName').optional().isString().trim(),
-    body('phone').optional().isString().trim(),
     body('notes').optional().isString(),
     body('items').isArray({ min: 1 }),
     body('items.*.kind').isIn(['FOOD','PACKAGE']),
     body('items.*.qty').isInt({ min: 1 }),
     body('items.*.foodId').optional().isMongoId(),
     body('items.*.packageId').optional().isMongoId(),
-    body('items.*.unitPrice').optional().isFloat({ min: 0 })
   ],
   validate,
   ctrl.create
@@ -82,11 +81,7 @@ router.patch('/:id/ready',
   ctrl.ready
 )
 
-/**
- * PATCH /orders/:id/deliver
- * Allow any authenticated user; controller can enforce that customers
- * may deliver only their own order if you choose to add that rule.
- */
+/** PATCH /orders/:id/deliver (any authed; controller restricts customer to own order) */
 router.patch('/:id/deliver',
   authenticate,
   [ param('id').isMongoId() ],

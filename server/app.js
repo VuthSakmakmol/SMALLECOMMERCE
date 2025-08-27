@@ -86,6 +86,9 @@ const categoryRoutes = require('./src/routes/categories.routes')
 const foodRoutes     = require('./src/routes/foods.routes')
 const userRoutes     = require('./src/routes/users.routes')
 const packageRoutes  = require('./src/routes/packages.routes')   // NEW (workshop bundles)
+const reportRoutes = require('./src/routes/reports.routes')
+
+
 
 app.use('/api/health', (req, res) => {
   res.json({
@@ -102,6 +105,7 @@ app.use('/api/categories', categoryRoutes)
 app.use('/api/foods', foodRoutes) // fixed typo
 app.use('/api/users', userRoutes)
 app.use('/api/packages', packageRoutes) // NEW
+app.use('/api/reports', reportRoutes)
 
 /* ───────────────────────────────
    Global error handler

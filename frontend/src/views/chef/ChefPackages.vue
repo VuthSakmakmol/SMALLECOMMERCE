@@ -1,7 +1,9 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import api from '@/utils/api'
+import { useAuth } from '@/store/auth'
 
+const auth = useAuth()
 const loading = ref(false)
 const rows = ref([])
 const foods = ref([])
@@ -63,14 +65,8 @@ async function save () {
   const ok = await formRef.value?.validate()
   if (!ok?.valid || form.value.items.length === 0) return
 
-  // Enforce only the 3 types and also avoid duplicates client-side
   if (!PACKAGE_TYPES.includes(form.value.name)) {
     alert('Package must be one of: Individual, Group, Workshop')
-    return
-  }
-  const exists = rows.value.find(r => r.name === form.value.name)
-  if (!editing.value && exists) {
-    alert(`${form.value.name} package already exists`)
     return
   }
 
@@ -128,9 +124,8 @@ onMounted(async () => {
 
 <template>
   <v-card class="rounded-2xl">
-    <!-- Toolbar -->
-    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
-      <v-toolbar-title>Packages (Free)</v-toolbar-title>
+    <v-toolbar color="deep-purple" density="comfortable" class="rounded-t-2xl">
+      <v-toolbar-title>Chef – Manage Packages</v-toolbar-title>
       <template #append>
         <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
@@ -141,7 +136,6 @@ onMounted(async () => {
       </template>
     </v-toolbar>
 
-    <!-- Filters -->
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="6">
@@ -162,7 +156,6 @@ onMounted(async () => {
         </v-col>
       </v-row>
 
-      <!-- Table -->
       <v-data-table :headers="headers" :items="rows" :items-per-page="10" class="rounded-xl">
         <template #item.image="{ item }">
           <v-avatar size="40" rounded="lg">
@@ -214,7 +207,6 @@ onMounted(async () => {
                   :items="['Individual','Group','Workshop']"
                   label="Package Type"
                   :rules="[rules.required]"
-                  clearable
                 />
               </v-col>
               <v-col cols="12" md="6">
@@ -275,6 +267,6 @@ onMounted(async () => {
     </v-dialog>
 
     <!-- FAB -->
-    <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
+    <v-fab icon="mdi-plus" app location="bottom end" color="deep-purple" @click="openCreate" />
   </v-card>
 </template>

@@ -2,6 +2,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/store/auth'
 import AdminPackages from '../views/admin/AdminPackages.vue'
+import ChefPackages from '../views/chef/ChefPackages.vue'
+import CustomerPackages from '../views/customer/CustomerPackages.vue'
 
 // Auth
 const Login = () => import('@/views/Login.vue')
@@ -58,6 +60,7 @@ const router = createRouter({
         { path: 'categories',    name: 'chef-categories',   component: ChefCategories },
         { path: 'foods',         name: 'chef-foods',        component: ChefFoods },
         { path: 'availability',  name: 'chef-availability', component: ChefAvailability },
+        { path: 'packages',      name: 'chef-packages',     component: ChefPackages}
       ]
     },
 
@@ -67,6 +70,7 @@ const router = createRouter({
       meta: { role: 'CUSTOMER' },
       children: [
         { path: '',            name: 'customer-browse',     component: CustomerBrowse },
+        { path: 'packages',    name: 'customer-packages',    component: CustomerPackages},
         { path: 'categories',  name: 'customer-categories', component: CustomerCategories },
         { path: 'history',     name: 'customer-history',    component: CustomerHistory },
       ]

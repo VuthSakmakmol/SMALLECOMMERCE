@@ -13,7 +13,8 @@ const items = [
   { to: '/chef',             text: 'Orders',       icon: 'mdi-receipt-text' },
   { to: '/chef/categories',  text: 'Categories',   icon: 'mdi-shape' },
   { to: '/chef/foods',       text: 'Foods',        icon: 'mdi-silverware-fork-knife' },
-  { to: '/chef/availability',text: 'Availability', icon: 'mdi-counter' }
+  { to: '/chef/availability',text: 'Availability', icon: 'mdi-counter' },
+  { to: '/chef/packages',    text: 'Packages',     icon: 'mdi-counter'}
 ]
 const isActive = (to) => route.path === to
 const logout = () => { auth.logout(); router.push('/login') }

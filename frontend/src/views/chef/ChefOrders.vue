@@ -6,7 +6,7 @@ import socket from '@/utils/socket'
 const loading = ref(false)
 const rows = ref([])
 const q = ref('')
-const status = ref('ACTIVE') // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
+const status = ref('ALL') // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
 const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
 const headers = [

@@ -7,11 +7,11 @@ import dayjs from 'dayjs'
 const loading = ref(false)
 const rows = ref([])
 const q = ref('')
-const type = ref('ALL') // ALL | INDIVIDUAL | GROUP | WORKSHOP
-const status = ref('ACTIVE') // ACTIVE (PLACED..READY), COMPLETED, CANCELED, ALL
+const type = ref('ALL')                      // ALL | INDIVIDUAL | GROUP | WORKSHOP
+const status = ref('ALL')                 // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
 
 const types = ['ALL','INDIVIDUAL','GROUP','WORKSHOP']
-const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','COMPLETED','CANCELED']
+const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
 const headers = [
   { title: 'Time', key: 'createdAt', sortable: true },
@@ -29,7 +29,7 @@ function statusColor(s) {
     ACCEPTED: 'primary',
     COOKING: 'deep-purple',
     READY: 'orange',
-    COMPLETED: 'green',
+    DELIVERED: 'green',
     CANCELED: 'red'
   }[s] || 'grey'
 }
@@ -44,7 +44,7 @@ const filtered = computed(() => {
     list = list.filter(r =>
       (r.customerName || '').toLowerCase().includes(qq) ||
       (r.groupKey || '').toLowerCase().includes(qq) ||
-      r.items.some(i => i.name.toLowerCase().includes(qq))
+      r.items.some(i => (i.name || '').toLowerCase().includes(qq))
     )
   }
   return list
@@ -53,10 +53,10 @@ const filtered = computed(() => {
 async function load() {
   loading.value = true
   try {
-    // let backend filter by type if you want
     const params = new URLSearchParams()
     if (type.value !== 'ALL') params.set('type', type.value)
-    const { data } = await api.get(`/api/orders?${params.toString()}`)
+    if (status.value === 'ACTIVE') params.set('status', 'ACTIVE')   // let backend pre-filter if wanted
+    const { data } = await api.get(`/orders?${params.toString()}`)  // <-- NO /api prefix
     rows.value = data
   } finally {
     loading.value = false
@@ -76,24 +76,27 @@ function describeWho(r) {
 function canNext(r) {
   return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status)
 }
-function nextStatus(r) {
-  return {
-    PLACED: 'ACCEPTED',
-    ACCEPTED: 'COOKING',
-    COOKING: 'READY',
-    READY: 'COMPLETED'
-  }[r.status]
+
+function nextActionPath(r) {
+  // map current status → backend endpoint path
+  switch (r.status) {
+    case 'PLACED':   return `/orders/${r._id}/accept`
+    case 'ACCEPTED': return `/orders/${r._id}/start`
+    case 'COOKING':  return `/orders/${r._id}/ready`
+    case 'READY':    return `/orders/${r._id}/deliver`   // final -> DELIVERED
+    default:         return null
+  }
 }
 
 async function advance(r) {
-  const next = nextStatus(r)
-  if (!next) return
-  const { data } = await api.patch(`/api/orders/${r._id}/status`, { nextStatus: next })
+  const path = nextActionPath(r)
+  if (!path) return
+  const { data } = await api.patch(path)
   upsertOrder(data)
 }
 
 async function cancel(r) {
-  const { data } = await api.patch(`/api/orders/${r._id}/status`, { nextStatus: 'CANCELED' })
+  const { data } = await api.patch(`/orders/${r._id}/cancel`)
   upsertOrder(data)
 }
 
@@ -106,24 +109,22 @@ function upsertOrder(o) {
 onMounted(() => {
   load()
 
-  // Join “admin” & general chef rooms to hear everything
+  // Listen for live updates
   socket.emit('join', { role: 'ADMIN' })
 
   const onNew = (order) => upsertOrder(order)
   const onStatus = (order) => upsertOrder(order)
-  const onCompleted = (order) => upsertOrder(order)
 
   socket.on('order:new', onNew)
   socket.on('order:status', onStatus)
-  socket.on('order:completed', onCompleted)
 
   onBeforeUnmount(() => {
     socket.off('order:new', onNew)
     socket.off('order:status', onStatus)
-    socket.off('order:completed', onCompleted)
   })
 })
 </script>
+
 
 <template>
   <v-card class="rounded-2xl">
@@ -139,14 +140,36 @@ onMounted(() => {
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="4">
-          <v-text-field v-model="q" label="Search (customer, group, item)" prepend-inner-icon="mdi-magnify" clearable />
+          <v-text-field
+            v-model="q"
+            label="Search (customer, group, item)"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            variant="outlined"
+            density="compact"
+          />
         </v-col>
+
         <v-col cols="12" md="3">
-          <v-select :items="types" v-model="type" label="Type" />
+          <v-select
+            :items="types"
+            v-model="type"
+            label="Type"
+            variant="outlined"
+            density="compact"
+          />
         </v-col>
+
         <v-col cols="12" md="3">
-          <v-select :items="statuses" v-model="status" label="Status" />
+          <v-select
+            :items="statuses"
+            v-model="status"
+            label="Status"
+            variant="outlined"
+            density="compact"
+          />
         </v-col>
+
       </v-row>
 
       <v-data-table

@@ -110,7 +110,7 @@ onMounted(load)
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="6">
-          <v-text-field v-model="q" label="Search category" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
+          <v-text-field v-model="q" density="compact" variant="outlined" label="Search category" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
         </v-col>
         <v-col cols="12" md="3">
           <v-btn :loading="loading" @click="load" block>
