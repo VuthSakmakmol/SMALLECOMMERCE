@@ -1,42 +1,118 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/utils/api'
 
-const rows = ref([])
-const form = ref({ name: '', order: 0 })
 const loading = ref(false)
-const saving = ref(false)
+const rows = ref([])
+const q = ref('')
 
-const load = async () => {
+const headers = [
+  { title: 'Name',   key: 'name' },
+  { title: 'Slug',   key: 'slug' },
+  { title: 'Parent', key: 'parent' },
+  { title: 'Order',  key: 'order', align: 'center' },
+  { title: 'Active', key: 'active', align: 'center' },
+]
+
+const filtered = computed(() => {
+  const s = q.value.trim().toLowerCase()
+  if (!s) return rows.value
+  return rows.value.filter(r =>
+    r.name.toLowerCase().includes(s) ||
+    (r.slug || '').toLowerCase().includes(s)
+  )
+})
+
+async function load () {
   loading.value = true
-  try { rows.value = (await api.get('/categories')).data }
-  finally { loading.value = false }
+  try {
+    const params = new URLSearchParams()
+    if (q.value) params.set('q', q.value)
+    // Chef should see all; if you want only active, add activeOnly=true
+    const { data } = await api.get(`/categories?${params.toString()}`)
+    rows.value = data
+  } finally {
+    loading.value = false
+  }
 }
-const createOne = async () => { saving.value = true; await api.post('/categories', form.value); form.value={name:'',order:0}; await load(); saving.value=false }
-const toggle = async (id, v) => { await api.patch(`/categories/${id}/toggle`, { value: v }); await load() }
-const removeOne = async (id) => { if(!confirm('Delete?'))return; await api.delete(`/categories/${id}`); await load() }
+
+function parentName (row) {
+  return rows.value.find(r => r._id === row.parentId)?.name || '—'
+}
+
+async function toggle (row, value) {
+  // Backend allows ADMIN | CHEF to toggle
+  const { data } = await api.patch(`/categories/${row._id}/toggle`, { value })
+  // Update local row
+  const i = rows.value.findIndex(r => r._id === data._id)
+  if (i !== -1) rows.value[i] = data
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <div>
-    <h2>Categories</h2>
-    <div class="mb-4" style="max-width:420px">
-      <v-text-field v-model="form.name" label="Name" />
-      <v-text-field v-model.number="form.order" type="number" label="Order" />
-      <v-btn :loading="saving" color="primary" @click="createOne">Add</v-btn>
-    </div>
+  <v-card class="rounded-2xl">
+    <!-- Toolbar -->
+    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
+      <v-toolbar-title>Categories</v-toolbar-title>
+      <template #append>
+        <v-btn color="white" variant="flat" :loading="loading" @click="load">
+          <v-icon start>mdi-refresh</v-icon> Refresh
+        </v-btn>
+      </template>
+    </v-toolbar>
 
-    <v-progress-linear v-if="loading" indeterminate />
-    <v-table v-else>
-      <thead><tr><th>Name</th><th>Order</th><th>Active</th><th></th></tr></thead>
-      <tbody>
-        <tr v-for="c in rows" :key="c._id">
-          <td>{{ c.name }}</td><td>{{ c.order }}</td>
-          <td><v-switch :model-value="c.isActive" @update:model-value="v=>toggle(c._id,v)" inset density="compact"/></td>
-          <td><v-btn size="small" color="error" @click="removeOne(c._id)">Delete</v-btn></td>
-        </tr>
-      </tbody>
-    </v-table>
-  </div>
+    <!-- Filters -->
+    <div class="pa-4">
+      <v-row dense class="mb-3">
+        <v-col cols="12" md="6">
+          <v-text-field
+            v-model="q"
+            label="Search category"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            @keyup.enter="load"
+          />
+        </v-col>
+        <v-col cols="12" md="3">
+          <v-btn :loading="loading" @click="load" block>
+            <v-icon start>mdi-refresh</v-icon> Refresh
+          </v-btn>
+        </v-col>
+      </v-row>
+
+      <!-- Table -->
+      <v-data-table
+        :headers="headers"
+        :items="filtered"
+        :items-per-page="10"
+        class="rounded-xl"
+      >
+        <template #item.parent="{ item }">
+          {{ parentName(item) }}
+        </template>
+
+        <template #item.order="{ item }">
+          <div class="text-center">{{ item.order ?? 0 }}</div>
+        </template>
+
+        <template #item.active="{ item }">
+          <div class="d-flex justify-center">
+            <v-switch
+              inset
+              :model-value="item.isActive"
+              hide-details
+              @change="toggle(item, $event)"
+            />
+          </div>
+        </template>
+      </v-data-table>
+    </div>
+  </v-card>
+  
 </template>
+
+<style scoped>
+.v-switch .v-label { font-size: 12px }
+</style>

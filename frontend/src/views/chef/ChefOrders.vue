@@ -1,62 +1,184 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import api from '@/utils/api'
 import socket from '@/utils/socket'
 
-const cols = ref({
-  PENDING: [], ACCEPTED: [], COOKING: [], READY: [], DELIVERED: []
-})
 const loading = ref(false)
+const rows = ref([])
+const q = ref('')
+const status = ref('ACTIVE') // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
+const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
-const load = async () => {
+const headers = [
+  { title: 'Time', key: 'createdAt' },
+  { title: 'Type', key: 'type' },
+  { title: 'Customer / Group', key: 'who' },
+  { title: 'Items', key: 'items' },
+  { title: 'Total', key: 'grandTotal', align: 'end' },
+  { title: 'Status', key: 'status', align: 'center' },
+  { title: 'Actions', key: 'actions', align: 'end' }
+]
+
+function statusColor (s) {
+  return { PLACED:'grey', ACCEPTED:'primary', COOKING:'deep-purple', READY:'orange', DELIVERED:'green', CANCELED:'red' }[s] || 'grey'
+}
+function prettyWhen (d) { return new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+function who (r) { return r.groupKey || r.customerName || '—' }
+
+const filtered = computed(() => {
+  let list = rows.value
+  if (status.value === 'ACTIVE') list = list.filter(r => ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status))
+  else if (status.value !== 'ALL') list = list.filter(r => r.status === status.value)
+  if (q.value.trim()) {
+    const qq = q.value.toLowerCase()
+    list = list.filter(r =>
+      (r.customerName || '').toLowerCase().includes(qq) ||
+      (r.groupKey || '').toLowerCase().includes(qq) ||
+      r.items.some(i => (i.name || '').toLowerCase().includes(qq))
+    )
+  }
+  return list
+})
+
+async function load () {
   loading.value = true
   try {
-    const { data } = await api.get('/orders', { params: { scope: 'CHEF' } })
-    const map = { PENDING: [], ACCEPTED: [], COOKING: [], READY: [], DELIVERED: [] }
-    data.forEach(o => (map[o.status] || (map[o.status]=[])).push(o))
-    cols.value = map
-  } finally { loading.value = false }
+    const { data } = await api.get('/orders')
+    rows.value = data
+  } finally {
+    loading.value = false
+  }
 }
 
-const act = async (id, action) => {
-  await api.patch(`/orders/${id}/${action}`) // accept | start | ready
-  await load()
+function canNext (r) { return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status) }
+function nextStatus (r) { return { PLACED:'ACCEPTED', ACCEPTED:'COOKING', COOKING:'READY', READY:'DELIVERED' }[r.status] }
+
+async function advance (r) {
+  const next = nextStatus(r)
+  if (!next) return
+
+  let url = ''
+  if (next === 'ACCEPTED')       url = `/orders/${r._id}/accept`
+  else if (next === 'COOKING')   url = `/orders/${r._id}/start`
+  else if (next === 'READY')     url = `/orders/${r._id}/ready`
+  else if (next === 'DELIVERED') url = `/orders/${r._id}/deliver`
+
+  try {
+    const { data } = await api.patch(url)
+    upsert(data)
+  } catch (e) {
+    console.error(e)
+    alert(e?.response?.data?.message || 'Failed to advance order')
+  }
+}
+
+async function cancel (r) {
+  try {
+    const { data } = await api.patch(`/orders/${r._id}/cancel`)
+    upsert(data)
+  } catch (e) {
+    console.error(e)
+    alert(e?.response?.data?.message || 'Failed to cancel order')
+  }
+}
+
+function upsert (o) {
+  const i = rows.value.findIndex(x => x._id === o._id)
+  if (i === -1) rows.value.unshift(o)
+  else rows.value[i] = o
 }
 
 onMounted(() => {
   load()
-  socket.on('orders:new', load)
-  socket.on('orders:update', load)
+  socket.emit('join', { role: 'CHEF' })
+
+  const onNew = (order) => upsert(order)
+  const onStatus = (order) => upsert(order)
+  const onCompleted = (order) => upsert(order)
+
+  socket.on('order:new', onNew)
+  socket.on('order:status', onStatus)
+  socket.on('order:completed', onCompleted)
+
+  onBeforeUnmount(() => {
+    socket.off('order:new', onNew)
+    socket.off('order:status', onStatus)
+    socket.off('order:completed', onCompleted)
+  })
 })
 </script>
 
 <template>
-  <div>
-    <h2>Orders</h2>
-    <v-progress-linear v-if="loading" indeterminate class="mb-3" />
-    <v-row dense>
-      <v-col cols="12" md="3" v-for="status in ['PENDING','ACCEPTED','COOKING','READY','DELIVERED']" :key="status">
-        <v-card>
-          <v-card-title>{{ status }} ({{ cols[status].length }})</v-card-title>
-          <v-divider />
-          <v-card-text style="min-height: 240px">
-            <div v-for="o in cols[status]" :key="o._id" class="mb-3 pa-2 rounded border">
-              <div class="text-subtitle-2">#{{ o._id.slice(-6) }}</div>
-              <div class="text-body-2">{{ o.items.map(i => i.nameSnapshot).join(', ') }}</div>
-              <div class="mt-2 d-flex" style="gap:6px">
-                <v-btn v-if="status==='PENDING'"  size="x-small" @click="act(o._id,'accept')">Accept</v-btn>
-                <v-btn v-if="status==='ACCEPTED'" size="x-small" @click="act(o._id,'start')">Start</v-btn>
-                <v-btn v-if="status==='COOKING'" size="x-small" color="success" @click="act(o._id,'ready')">Ready</v-btn>
-                <!-- DELIVERED has no actions -->
-              </div>
-            </div>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
-  </div>
-</template>
+  <v-card class="rounded-2xl">
+    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
+      <v-toolbar-title>Kitchen Orders</v-toolbar-title>
+      <template #append>
+        <v-btn color="white" variant="flat" :loading="loading" @click="load">
+          <v-icon start>mdi-refresh</v-icon> Refresh
+        </v-btn>
+      </template>
+    </v-toolbar>
 
-<style scoped>
-.border { border: 1px solid rgba(0,0,0,0.1); }
-</style>
+    <div class="pa-4">
+      <v-row dense class="mb-3">
+        <v-col cols="12" md="5">
+          <v-text-field v-model="q" label="Search (customer, group, item)" prepend-inner-icon="mdi-magnify" clearable />
+        </v-col>
+        <v-col cols="12" md="3">
+          <v-select :items="statuses" v-model="status" label="Status" />
+        </v-col>
+        <v-col cols="12" md="2">
+          <v-btn :loading="loading" block @click="load">
+            <v-icon start>mdi-refresh</v-icon> Refresh
+          </v-btn>
+        </v-col>
+      </v-row>
+
+      <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl">
+        <template #item.createdAt="{ item }">
+          <span>{{ prettyWhen(item.createdAt) }}</span>
+        </template>
+
+        <template #item.who="{ item }">
+          <div class="d-flex flex-column">
+            <strong>{{ who(item) }}</strong>
+            <small class="text-medium-emphasis">#{{ item._id.slice(-6) }}</small>
+          </div>
+        </template>
+
+        <template #item.items="{ item }">
+          <div class="d-flex flex-wrap ga-1">
+            <v-chip
+              v-for="it in item.items" :key="(it.name || 'x') + (it.unitPrice || 0)"
+              size="small"
+              :prepend-icon="it.kind === 'PACKAGE' ? 'mdi-briefcase-variant' : 'mdi-silverware'"
+              variant="outlined"
+            >
+              {{ it.qty }}× {{ it.name || 'Item' }}
+            </v-chip>
+          </div>
+        </template>
+
+        <template #item.grandTotal="{ item }">
+          <strong>${{ Number(item.grandTotal || 0).toFixed(2) }}</strong>
+        </template>
+
+        <template #item.status="{ item }">
+          <v-chip :color="statusColor(item.status)" label>{{ item.status }}</v-chip>
+        </template>
+
+        <template #item.actions="{ item }">
+          <div class="d-flex ga-2 justify-end">
+            <v-btn v-if="canNext(item)" color="primary" size="small" @click="advance(item)">
+              <v-icon start>mdi-arrow-right</v-icon> Next
+            </v-btn>
+            <v-btn v-if="['PLACED','ACCEPTED','COOKING','READY'].includes(item.status)"
+                   color="red" variant="text" size="small" @click="cancel(item)">
+              Cancel
+            </v-btn>
+          </div>
+        </template>
+      </v-data-table>
+    </div>
+  </v-card>
+</template>

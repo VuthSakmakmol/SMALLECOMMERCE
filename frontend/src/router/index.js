@@ -1,6 +1,7 @@
 // src/router/index.js
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '@/store/auth'
+import AdminPackages from '../views/admin/AdminPackages.vue'
 
 // Auth
 const Login = () => import('@/views/Login.vue')
@@ -40,6 +41,7 @@ const router = createRouter({
       children: [
         { path: '',            name: 'admin-dashboard',  component: AdminDashboard },
         { path: 'categories',  name: 'admin-categories', component: AdminCategories },
+        { path: 'packages',    name: 'admin-packages',   component: AdminPackages},
         { path: 'foods',       name: 'admin-foods',      component: AdminFoods },
         { path: 'orders',      name: 'admin-orders',     component: AdminOrders },
         { path: 'users',       name: 'admin-users',      component: AdminUsers },

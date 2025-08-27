@@ -1,5 +1,4 @@
 // server/app.js
-
 const express = require('express')
 const http = require('http')
 const cors = require('cors')
@@ -25,30 +24,10 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-
-// Endpoint
-// at the top of app.js (after express/json)
-const authRoutes  = require('./src/routes/auth.routes')
-const orderRoutes = require('./src/routes/orders.routes')  // plural
-const categoryRoutes = require('./src/routes/categories.routes')
-const foodRoutes     = require('./src/routes/foods.routes')
-const userRoutes = require('./src/routes/users.routes')
-
-
-
-app.use('/api/auth', authRoutes)
-app.use('/api/orders', orderRoutes)
-app.use('/api/categories', categoryRoutes)
-app.use('/api/foods', foodsRoutes = foodRoutes)
-app.use('/api/users', userRoutes)
-app.use('/api/orders', orderRoutes)
-
-
 /* ───────────────────────────────
    MongoDB connection
 ──────────────────────────────── */
 mongoose.set('strictQuery', true)
-
 mongoose
   .connect(MONGODB_URI)
   .then(() => console.log('[MongoDB] Connected successfully'))
@@ -64,32 +43,51 @@ const server = http.createServer(app)
 const { Server } = require('socket.io')
 const io = new Server(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE']
+    origin: '*', // TODO: restrict to your frontend origin in production
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
   }
 })
 
 io.on('connection', (socket) => {
-  socket.on('join', ({ role, userId, kitchenId }) => {
-    if (role === 'ADMIN') socket.join('room:admin')
-    if (role === 'CHEF')  socket.join(`room:chef:${kitchenId || 'default'}`)
-    if (role === 'CUSTOMER') socket.join(`room:customer:${userId}`)
+  // role = ADMIN | CHEF | CUSTOMER
+  // userId: for customers
+  // kitchenId: for chefs (optional)
+  // groupKey: table/room key (optional)
+  socket.on('join', ({ role, userId, kitchenId, groupKey }) => {
+    if (role === 'ADMIN') {
+      socket.join('room:admin')
+    }
+    if (role === 'CHEF') {
+      socket.join('room:chef') // global room for all chefs
+      socket.join(`room:chef:${kitchenId || 'default'}`)
+    }
+    if (role === 'CUSTOMER' && userId) {
+      socket.join(`room:customer:${userId}`)
+    }
+    if (groupKey) {
+      socket.join(`room:group:${groupKey}`)
+    }
   })
 
-  // let the customer subscribe to just their active order too
+  // let the client subscribe to a specific order
   socket.on('join-order', ({ orderId }) => {
     if (orderId) socket.join(`room:order:${orderId}`)
   })
 })
-app.set('io', io)
-
 
 app.set('io', io)
 
 /* ───────────────────────────────
    Routes
 ──────────────────────────────── */
-app.get('/api/health', (req, res) => {
+const authRoutes     = require('./src/routes/auth.routes')
+const orderRoutes    = require('./src/routes/orders.routes')     // plural
+const categoryRoutes = require('./src/routes/categories.routes')
+const foodRoutes     = require('./src/routes/foods.routes')
+const userRoutes     = require('./src/routes/users.routes')
+const packageRoutes  = require('./src/routes/packages.routes')   // NEW (workshop bundles)
+
+app.use('/api/health', (req, res) => {
   res.json({
     ok: true,
     env: NODE_ENV,
@@ -97,6 +95,13 @@ app.get('/api/health', (req, res) => {
     time: new Date().toISOString()
   })
 })
+
+app.use('/api/auth', authRoutes)
+app.use('/api/orders', orderRoutes)
+app.use('/api/categories', categoryRoutes)
+app.use('/api/foods', foodRoutes) // fixed typo
+app.use('/api/users', userRoutes)
+app.use('/api/packages', packageRoutes) // NEW
 
 /* ───────────────────────────────
    Global error handler

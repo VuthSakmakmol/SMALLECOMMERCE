@@ -1,168 +1,315 @@
+// server/src/controllers/orders.controller.js
 const dayjs = require('dayjs')
 const Order = require('../models/Order')
 const Food = require('../models/Food')
-const { notifyAdmin, notifyChefs } = require('../services/telegram')
+const Package = require('../models/Package')
 
-// helper
-const pushTL = (order, status, byUserId, note) => {
-  order.timeline.push({ status, at: new Date(), byUserId, note })
+// statuses used by your routes/UI
+const STATUS = {
+  PLACED: 'PLACED',
+  ACCEPTED: 'ACCEPTED',
+  COOKING: 'COOKING',
+  READY: 'READY',
+  DELIVERED: 'DELIVERED',
+  CANCELED: 'CANCELED'
 }
 
-// helper
-function emitUpdate(io, order) {
-  const payload = { orderId: order._id.toString(), status: order.status } // ← string!
-  io?.to('room:admin').emit('orders:update', payload)
-  if (order.kitchenId) io?.to(`room:chef:${order.kitchenId}`).emit('orders:update', payload)
-  if (order.customerId) io?.to(`room:customer:${order.customerId}`).emit('orders:update', payload)
-  io?.to(`room:order:${order._id}`).emit('orders:update', payload) // optional room
+const ORDER_TYPES = ['INDIVIDUAL', 'GROUP', 'WORKSHOP']
+const todayStr = () => dayjs().format('YYYY-MM-DD')
+
+/* ───────────────────────────────
+   Stock helpers
+──────────────────────────────── */
+async function applyStockForFood (foodId, qty, { consume = false } = {}) {
+  const food = await Food.findById(foodId)
+  if (!food) return { ok: false, reason: 'NOT_FOUND' }
+
+  // unlimited
+  if (food.dailyLimit == null) return { ok: true }
+
+  // reset if day changed
+  if (food.stockDate !== todayStr()) {
+    food.stockDate = todayStr()
+    food.stockRemaining = food.dailyLimit
+  }
+
+  if ((food.stockRemaining ?? 0) < qty) {
+    return { ok: false, reason: 'OUT_OF_STOCK', remaining: food.stockRemaining ?? 0 }
+  }
+
+  if (consume) {
+    food.stockRemaining -= qty
+    await food.save()
+  }
+  return { ok: true, remaining: food.stockRemaining }
 }
 
-// GET /api/orders?scope=ADMIN|CHEF|CUSTOMER&status=...
-const list = async (req, res, next) => {
+async function explodePackage (pkgDoc, qty) {
+  // pkg.items: [{ foodId, qty }]
+  return (pkgDoc.items || []).map(it => ({
+    foodId: it.foodId,
+    qtyToConsume: (Number(it.qty) || 0) * (Number(qty) || 0)
+  }))
+}
+
+function snapshotFoodLine (foodDoc, qty, unitPrice) {
+  return {
+    kind: 'FOOD',
+    foodId: foodDoc._id,
+    name: foodDoc.name,
+    imageUrl: foodDoc.imageUrl || '',
+    qty: Number(qty),
+    unitPrice: Number(unitPrice) // NOTE: your Food model has no price; default 0 unless provided
+  }
+}
+
+function snapshotPackageLine (pkgDoc, qty) {
+  return {
+    kind: 'PACKAGE',
+    packageId: pkgDoc._id,
+    name: pkgDoc.name,
+    imageUrl: pkgDoc.imageUrl || '',
+    qty: Number(qty),
+    unitPrice: Number(pkgDoc.price || 0)
+  }
+}
+
+/* ───────────────────────────────
+   Socket helper
+──────────────────────────────── */
+function emitOrder (req, orderObj, event) {
+  const io = req.app.get('io')
+  if (!io) return
+
+  io.to('room:chef').emit(event, orderObj)
+  io.to('room:admin').emit(event, orderObj)
+  if (orderObj.customerId) io.to(`room:customer:${orderObj.customerId}`).emit(event, orderObj)
+  io.to(`room:order:${orderObj._id}`).emit(event, orderObj)
+  if (orderObj.groupKey) io.to(`room:group:${orderObj.groupKey}`).emit(event, orderObj)
+}
+
+/* ───────────────────────────────
+   Controllers
+──────────────────────────────── */
+
+// GET /orders?status=&type=&groupKey=
+async function list (req, res, next) {
   try {
-    const { scope, status } = req.query
+    const { status, type, groupKey } = req.query
     const filter = {}
     if (status) filter.status = status
+    if (type) filter.type = type
+    if (groupKey) filter.groupKey = groupKey
 
-    if (scope === 'CHEF' && req.user?.kitchenId) {
-      filter.kitchenId = req.user.kitchenId
-    } else if (scope === 'CUSTOMER') {
-      filter.customerId = req.user._id
-    }
     const rows = await Order.find(filter).sort({ createdAt: -1 }).lean()
     res.json(rows)
   } catch (e) { next(e) }
 }
 
-// POST /api/orders  { items:[{foodId, qty, preferences?}], kitchenId? }
-const create = async (req, res, next) => {
+// GET /orders/:id
+async function getOne (req, res, next) {
   try {
-    const { items = [], kitchenId = null } = req.body
-    if (!items.length) return res.status(400).json({ message: 'Empty items' })
+    const row = await Order.findById(req.params.id).lean()
+    if (!row) return res.status(404).json({ message: 'Order not found' })
+    res.json(row)
+  } catch (e) { next(e) }
+}
 
-    const today = dayjs().format('YYYY-MM-DD')
-    const foods = await Food.find({ _id: { $in: items.map(i => i.foodId) }, isActiveGlobal: true, isActiveKitchen: true })
-    const byId = new Map(foods.map(f => [String(f._id), f]))
+// POST /orders
+// body: { type, groupKey?, customerId?, customerName?, phone?, notes?, items:[{ kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty, unitPrice? }] }
+async function create (req, res, next) {
+  try {
+    const {
+      type = 'INDIVIDUAL',
+      groupKey = null,
+      customerId = null,
+      customerName = '',
+      phone = '',
+      notes = '',
+      items = []
+    } = req.body
 
-    // check and decrement stock
-    for (const it of items) {
-      const f = byId.get(String(it.foodId))
-      if (!f) return res.status(400).json({ message: 'Food not available', foodId: it.foodId })
-      const qty = it.qty || 1
-      if (f.dailyLimit !== null) {
-        if (f.stockDate !== today) {
-          f.stockDate = today
-          f.stockRemaining = f.dailyLimit
-        }
-        if (f.stockRemaining < qty) {
-          return res.status(400).json({ message: 'Out of stock', foodId: f._id, remaining: f.stockRemaining })
-        }
-      }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'Order requires at least one item' })
     }
-    for (const it of items) {
-      const f = byId.get(String(it.foodId))
-      const qty = it.qty || 1
-      if (f.dailyLimit !== null) {
-        f.stockRemaining -= qty
-        await f.save()
-      }
+    if (!ORDER_TYPES.includes(type)) {
+      return res.status(400).json({ message: 'Invalid order type' })
     }
 
-    const order = new Order({
-      customerId: req.user?.role === 'CUSTOMER' ? req.user._id : null,
-      kitchenId,
-      items: items.map(it => {
-        const f = byId.get(String(it.foodId))
-        return {
-          foodId: f._id,
-          nameSnapshot: f.name,
-          qty: it.qty || 1,
-          preferences: it.preferences || {}
+    const lines = []
+    const consumptions = []
+
+    for (const it of items) {
+      const qty = Number(it.qty || 0)
+      if (qty <= 0) return res.status(400).json({ message: 'Invalid qty in items' })
+
+      if (it.kind === 'FOOD') {
+        const food = await Food.findById(it.foodId)
+        if (!food) return res.status(400).json({ message: 'Food not found' })
+
+        const check = await applyStockForFood(food._id, qty, { consume: false })
+        if (!check.ok) {
+          return res.status(409).json({ message: `Out of stock for ${food.name}`, remaining: check.remaining })
         }
-      }),
-      status: 'PENDING',
-      timeline: []
+
+        const unitPrice = it.unitPrice != null ? Number(it.unitPrice) : Number(food.price || 0)
+        lines.push(snapshotFoodLine(food, qty, unitPrice))
+        consumptions.push({ foodId: food._id, qty })
+      } else if (it.kind === 'PACKAGE') {
+        const pkg = await Package.findById(it.packageId)
+        if (!pkg || pkg.isActive === false) {
+          return res.status(400).json({ message: 'Package not found or inactive' })
+        }
+        const parts = await explodePackage(pkg, qty)
+        for (const p of parts) {
+          const ok = await applyStockForFood(p.foodId, p.qtyToConsume, { consume: false })
+          if (!ok.ok) {
+            const f = await Food.findById(p.foodId).lean()
+            return res.status(409).json({ message: `Out of stock for ${f?.name || 'item in package'}`, remaining: ok.remaining })
+          }
+        }
+        lines.push(snapshotPackageLine(pkg, qty))
+        consumptions.push(...parts.map(p => ({ foodId: p.foodId, qty: p.qtyToConsume })))
+      } else {
+        return res.status(400).json({ message: 'Invalid item kind (must be FOOD or PACKAGE)' })
+      }
+    }
+
+    // totals
+    const subtotal = lines.reduce((s, l) => s + Number(l.unitPrice) * Number(l.qty), 0)
+    const discount = 0
+    const serviceFee = 0
+    const grandTotal = subtotal - discount + serviceFee
+
+    // create order
+    const order = await Order.create({
+      type,
+      groupKey,
+      customerId,
+      customerName,
+      phone,
+      items: lines,
+      notes,
+      subtotal,
+      discount,
+      serviceFee,
+      grandTotal,
+      status: STATUS.PLACED,
+      createdBy: req.user?._id || null,
+      updatedBy: req.user?._id || null
     })
-    pushTL(order, 'PENDING', req.user?._id || null, 'Created')
-    await order.save()
 
-    const io = req.app.get('io')
-    // sockets
-    io?.to('room:admin').emit('orders:new', order)
-    if (order.kitchenId) io?.to(`room:chef:${order.kitchenId}`).emit('orders:new', order)
-    if (order.customerId) io?.to(`room:customer:${order.customerId}`).emit('orders:new', order)
-    // customer can also join a dedicated room if you want
-    // (front-end will listen to 'orders:update' anyway)
-    // io?.socketsJoin?.(`room:order:${order._id}`)
+    // consume stock
+    for (const c of consumptions) {
+      const r = await applyStockForFood(c.foodId, c.qty, { consume: true })
+      if (!r.ok) {
+        order.status = STATUS.CANCELED
+        order.canceledAt = new Date()
+        await order.save()
+        return res.status(409).json({ message: 'Stock race condition, order auto-canceled' })
+      }
+    }
 
-    // Telegram
-    const summary = order.items.map(i => `${i.qty}× ${i.nameSnapshot}`).join(', ')
-    await notifyAdmin(`🍽️ <b>New order</b> #${order._id}\nItems: ${summary}`)
-    await notifyChefs(`🍽️ New order #${order._id}\nItems: ${summary}`, order.kitchenId)
-
+    emitOrder(req, order.toObject(), 'order:new')
     res.status(201).json(order)
   } catch (e) { next(e) }
 }
 
-const transition = (next) => async (req, res, nextFn) => {
+/* ───────────────────────────────
+   Status transitions
+──────────────────────────────── */
+// PATCH /orders/:id/accept
+async function accept (req, res, next) {
   try {
-    const { id } = req.params
-    const order = await Order.findById(id)
+    const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Order not found' })
-
-    const flow = {
-      accept: { from: ['PENDING'], to: 'ACCEPTED', label: 'accepted' },
-      start:  { from: ['ACCEPTED'], to: 'COOKING', label: 'started cooking' },
-      ready:  { from: ['COOKING'], to: 'READY',   label: 'ready' },
-      deliver:{ from: ['READY'],    to: 'DELIVERED',label: 'delivered' }
-    }[next]
-
-    if (!flow.from.includes(order.status))
-      return res.status(400).json({ message: `Cannot ${next} from ${order.status}` })
-
-    // permissions: chef/admin; for deliver allow customer if owns it
-    const role = req.user.role
-    if (next === 'deliver' && role === 'CUSTOMER') {
-      if (String(order.customerId) !== String(req.user._id)) {
-        return res.status(403).json({ message: 'Not your order' })
-      }
-    } else if (!['CHEF','ADMIN'].includes(role)) {
-      return res.status(403).json({ message: 'Forbidden' })
+    if (order.status !== STATUS.PLACED) {
+      return res.status(400).json({ message: `Order must be ${STATUS.PLACED} before accepting` })
     }
-
-    order.status = flow.to
-    pushTL(order, flow.to, req.user._id, flow.label)
+    order.status = STATUS.ACCEPTED
+    order.acceptedAt = new Date()
+    order.updatedBy = req.user?._id || null
     await order.save()
-
-    const io = req.app.get('io')
-    emitUpdate(io, order)
-
-    // Telegram notes to admin
-    await notifyAdmin(`🧑‍🍳 Order #${order._id} ${flow.label}.`)
+    emitOrder(req, order.toObject(), 'order:status')
     res.json(order)
-  } catch (e) { nextFn(e) }
-}
-
-const getOne = async (req, res, next) => {
-  try {
-    const { id } = req.params
-    const o = await Order.findById(id).lean()
-    if (!o) return res.status(404).json({ message: 'Order not found' })
-    // auth: admin, chef in same kitchen, or owner customer
-    if (req.user.role === 'CUSTOMER' && String(o.customerId) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' })
-    if (req.user.role === 'CHEF' && o.kitchenId && req.user.kitchenId !== o.kitchenId) return res.status(403).json({ message: 'Forbidden' })
-    res.json(o)
   } catch (e) { next(e) }
 }
 
+// PATCH /orders/:id/start
+async function start (req, res, next) {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Order not found' })
+    if (![STATUS.ACCEPTED, STATUS.PLACED].includes(order.status)) {
+      return res.status(400).json({ message: 'Order must be ACCEPTED (or PLACED) to start cooking' })
+    }
+    order.status = STATUS.COOKING
+    order.cookingAt = new Date()
+    order.updatedBy = req.user?._id || null
+    await order.save()
+    emitOrder(req, order.toObject(), 'order:status')
+    res.json(order)
+  } catch (e) { next(e) }
+}
 
+// PATCH /orders/:id/ready
+async function ready (req, res, next) {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Order not found' })
+    if (order.status !== STATUS.COOKING && order.status !== STATUS.ACCEPTED) {
+      return res.status(400).json({ message: 'Order must be COOKING/ACCEPTED to mark READY' })
+    }
+    order.status = STATUS.READY
+    order.readyAt = new Date()
+    order.updatedBy = req.user?._id || null
+    await order.save()
+    emitOrder(req, order.toObject(), 'order:status')
+    res.json(order)
+  } catch (e) { next(e) }
+}
+
+// PATCH /orders/:id/deliver
+async function deliver (req, res, next) {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Order not found' })
+    if (order.status !== STATUS.READY) {
+      return res.status(400).json({ message: 'Order must be READY to deliver' })
+    }
+    order.status = STATUS.DELIVERED
+    order.deliveredAt = new Date()
+    order.updatedBy = req.user?._id || null
+    await order.save()
+    emitOrder(req, order.toObject(), 'order:status')
+    res.json(order)
+  } catch (e) { next(e) }
+}
+
+// PATCH /orders/:id/cancel
+async function cancel (req, res, next) {
+  try {
+    const order = await Order.findById(req.params.id)
+    if (!order) return res.status(404).json({ message: 'Order not found' })
+    if ([STATUS.DELIVERED, STATUS.CANCELED].includes(order.status)) {
+      return res.status(400).json({ message: 'Order already finished' })
+    }
+    order.status = STATUS.CANCELED
+    order.canceledAt = new Date()
+    order.updatedBy = req.user?._id || null
+    await order.save()
+    emitOrder(req, order.toObject(), 'order:status')
+    res.json(order)
+  } catch (e) { next(e) }
+}
 
 module.exports = {
   list,
+  getOne,
   create,
-  accept:  transition('accept'),
-  start:   transition('start'),
-  ready:   transition('ready'),
-  deliver: transition('deliver'),
-  getOne
+  accept,
+  start,
+  ready,
+  deliver,
+  cancel
 }

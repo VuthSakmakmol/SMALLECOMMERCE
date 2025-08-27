@@ -13,9 +13,11 @@ const items = [
   { to: '/admin',            text: 'Dashboard',  icon: 'mdi-view-dashboard' },
   { to: '/admin/categories', text: 'Categories', icon: 'mdi-shape' },
   { to: '/admin/foods',      text: 'Foods',      icon: 'mdi-silverware-fork-knife' },
+  { to: '/admin/packages',   text: 'Packages',   icon: 'mdi-briefcase-variant' }, // NEW
   { to: '/admin/orders',     text: 'Orders',     icon: 'mdi-receipt-text' },
   { to: '/admin/users',      text: 'Users',      icon: 'mdi-account-group' },
 ]
+
 const isActive = (to) => route.path === to
 const logout = () => { auth.logout(); router.push('/login') }
 </script>
