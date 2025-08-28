@@ -5,13 +5,6 @@ const { authenticate, authorize } = require('../middleware/auth')
 const { validate } = require('../middleware/validate')
 const ctrl = require('../controllers/orders.controller')
 
-/**
- * GET /orders
- * ?status=ACTIVE|PLACED|ACCEPTED|COOKING|READY|DELIVERED|CANCELED
- * ?type=INDIVIDUAL|GROUP|WORKSHOP
- * ?groupKey=XYZ
- * ?q=search-text (matches groupKey / notes / item names)
- */
 router.get('/',
   authenticate,
   [
@@ -24,15 +17,6 @@ router.get('/',
   ctrl.list
 )
 
-/**
- * POST /orders
- * body: {
- *   type?: 'INDIVIDUAL'|'GROUP'|'WORKSHOP',
- *   groupKey?: string,
- *   notes?: string,
- *   items: [{ kind:'FOOD'|'PACKAGE', foodId?, packageId?, qty }]
- * }
- */
 router.post('/',
   authenticate, authorize('ADMIN','CUSTOMER'),
   [
@@ -49,7 +33,6 @@ router.post('/',
   ctrl.create
 )
 
-/** GET /orders/:id */
 router.get('/:id',
   authenticate,
   [ param('id').isMongoId() ],
@@ -57,7 +40,6 @@ router.get('/:id',
   ctrl.getOne
 )
 
-/** PATCH /orders/:id/accept (CHEF | ADMIN) */
 router.patch('/:id/accept',
   authenticate, authorize('CHEF','ADMIN'),
   [ param('id').isMongoId() ],
@@ -65,7 +47,6 @@ router.patch('/:id/accept',
   ctrl.accept
 )
 
-/** PATCH /orders/:id/start (CHEF | ADMIN) */
 router.patch('/:id/start',
   authenticate, authorize('CHEF','ADMIN'),
   [ param('id').isMongoId() ],
@@ -73,7 +54,6 @@ router.patch('/:id/start',
   ctrl.start
 )
 
-/** PATCH /orders/:id/ready (CHEF | ADMIN) */
 router.patch('/:id/ready',
   authenticate, authorize('CHEF','ADMIN'),
   [ param('id').isMongoId() ],
@@ -81,7 +61,6 @@ router.patch('/:id/ready',
   ctrl.ready
 )
 
-/** PATCH /orders/:id/deliver (any authed; controller restricts customer to own order) */
 router.patch('/:id/deliver',
   authenticate,
   [ param('id').isMongoId() ],
@@ -89,7 +68,6 @@ router.patch('/:id/deliver',
   ctrl.deliver
 )
 
-/** PATCH /orders/:id/cancel (CHEF | ADMIN) */
 router.patch('/:id/cancel',
   authenticate, authorize('CHEF','ADMIN'),
   [ param('id').isMongoId() ],

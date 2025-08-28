@@ -6,17 +6,18 @@ import socket from '@/utils/socket'
 const loading = ref(false)
 const rows = ref([])
 const q = ref('')
-const status = ref('ALL') // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
+// ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
+const status = ref('ALL')
 const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
+// 💡 Removed the "Total" column since everything is free.
 const headers = [
-  { title: 'Time', key: 'createdAt' },
-  { title: 'Type', key: 'type' },
-  { title: 'Customer / Group', key: 'who' },
-  { title: 'Items', key: 'items' },
-  { title: 'Total', key: 'grandTotal', align: 'end' },
-  { title: 'Status', key: 'status', align: 'center' },
-  { title: 'Actions', key: 'actions', align: 'end' }
+  { title: 'Time',               key: 'createdAt' },
+  { title: 'Type',               key: 'type' },
+  { title: 'Customer / Group',   key: 'who' },
+  { title: 'Items',              key: 'items' },
+  { title: 'Status',             key: 'status', align: 'center' },
+  { title: 'Actions',            key: 'actions', align: 'end' }
 ]
 
 function statusColor (s) {
@@ -27,8 +28,11 @@ function who (r) { return r.groupKey || r.customerName || '—' }
 
 const filtered = computed(() => {
   let list = rows.value
-  if (status.value === 'ACTIVE') list = list.filter(r => ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status))
-  else if (status.value !== 'ALL') list = list.filter(r => r.status === status.value)
+  if (status.value === 'ACTIVE') {
+    list = list.filter(r => ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status))
+  } else if (status.value !== 'ALL') {
+    list = list.filter(r => r.status === status.value)
+  }
   if (q.value.trim()) {
     const qq = q.value.toLowerCase()
     list = list.filter(r =>
@@ -51,7 +55,7 @@ async function load () {
 }
 
 function canNext (r) { return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status) }
-function nextStatus (r) { return { PLACED:'ACCEPTED', ACCEPTED:'COOKING', COOKING:'READY', READY:'DELIVERED' }[r.status] }
+function nextStatus (r) { return ({ PLACED:'ACCEPTED', ACCEPTED:'COOKING', COOKING:'READY', READY:'DELIVERED' })[r.status] }
 
 async function advance (r) {
   const next = nextStatus(r)
@@ -88,23 +92,23 @@ function upsert (o) {
   else rows.value[i] = o
 }
 
+/* ── sockets ── */
+const onNew = (order) => upsert(order)
+const onStatus = (order) => upsert(order)
+const onCompleted = (order) => upsert(order)
+
 onMounted(() => {
   load()
   socket.emit('join', { role: 'CHEF' })
-
-  const onNew = (order) => upsert(order)
-  const onStatus = (order) => upsert(order)
-  const onCompleted = (order) => upsert(order)
-
   socket.on('order:new', onNew)
   socket.on('order:status', onStatus)
   socket.on('order:completed', onCompleted)
+})
 
-  onBeforeUnmount(() => {
-    socket.off('order:new', onNew)
-    socket.off('order:status', onStatus)
-    socket.off('order:completed', onCompleted)
-  })
+onBeforeUnmount(() => {
+  socket.off('order:new', onNew)
+  socket.off('order:status', onStatus)
+  socket.off('order:completed', onCompleted)
 })
 </script>
 
@@ -122,7 +126,12 @@ onMounted(() => {
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="5">
-          <v-text-field v-model="q" label="Search (customer, group, item)" prepend-inner-icon="mdi-magnify" clearable />
+          <v-text-field
+            v-model="q"
+            label="Search (customer, group, item)"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+          />
         </v-col>
         <v-col cols="12" md="3">
           <v-select :items="statuses" v-model="status" label="Status" />
@@ -139,6 +148,10 @@ onMounted(() => {
           <span>{{ prettyWhen(item.createdAt) }}</span>
         </template>
 
+        <template #item.type="{ item }">
+          <v-chip size="small" color="primary" variant="tonal">{{ item.type }}</v-chip>
+        </template>
+
         <template #item.who="{ item }">
           <div class="d-flex flex-column">
             <strong>{{ who(item) }}</strong>
@@ -148,8 +161,10 @@ onMounted(() => {
 
         <template #item.items="{ item }">
           <div class="d-flex flex-wrap ga-1">
+            <!-- 🧹 Removed any unitPrice keys; use stable key from ids/kind/name -->
             <v-chip
-              v-for="it in item.items" :key="(it.name || 'x') + (it.unitPrice || 0)"
+              v-for="it in item.items"
+              :key="`${it.kind}:${it.foodId || it.packageId}:${it.name || 'Item'}`"
               size="small"
               :prepend-icon="it.kind === 'PACKAGE' ? 'mdi-briefcase-variant' : 'mdi-silverware'"
               variant="outlined"
@@ -159,21 +174,28 @@ onMounted(() => {
           </div>
         </template>
 
-        <template #item.grandTotal="{ item }">
-          <strong>${{ Number(item.grandTotal || 0).toFixed(2) }}</strong>
-        </template>
-
         <template #item.status="{ item }">
           <v-chip :color="statusColor(item.status)" label>{{ item.status }}</v-chip>
         </template>
 
         <template #item.actions="{ item }">
           <div class="d-flex ga-2 justify-end">
-            <v-btn v-if="canNext(item)" color="primary" size="small" @click="advance(item)">
+            <v-btn
+              v-if="canNext(item)"
+              color="primary"
+              size="small"
+              @click="advance(item)"
+            >
               <v-icon start>mdi-arrow-right</v-icon> Next
             </v-btn>
-            <v-btn v-if="['PLACED','ACCEPTED','COOKING','READY'].includes(item.status)"
-                   color="red" variant="text" size="small" @click="cancel(item)">
+
+            <v-btn
+              v-if="['PLACED','ACCEPTED','COOKING','READY'].includes(item.status)"
+              color="red"
+              variant="text"
+              size="small"
+              @click="cancel(item)"
+            >
               Cancel
             </v-btn>
           </div>

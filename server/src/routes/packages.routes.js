@@ -1,4 +1,4 @@
-// routes/package.routes.js
+// server/src/routes/package.routes.js
 const router = require('express').Router()
 const { body, param, query } = require('express-validator')
 const { authenticate, authorize } = require('../middleware/auth')
@@ -45,6 +45,7 @@ router.put('/:id',
     body('description').optional().isString(),
     body('imageUrl').optional().isString(),
     body('isActive').optional().isBoolean(),
+    body('dailyLimit').optional().custom(v => v === null || (Number.isInteger(v) && v >= 0)),
     body('items').optional().isArray({ min: 1 }),
     body('items.*.foodId').optional().isMongoId(),
     body('items.*.qty').optional().isInt({ min: 1 }),
@@ -53,7 +54,7 @@ router.put('/:id',
   ctrl.update
 )
 
-// Toggle Active (ADMIN + CHEF)
+// Toggle active (ADMIN + CHEF)
 router.patch('/:id/toggle',
   authenticate, authorize('ADMIN','CHEF'),
   [
@@ -62,6 +63,17 @@ router.patch('/:id/toggle',
   ],
   validate,
   ctrl.toggle
+)
+
+// Daily stock (ADMIN | CHEF)
+router.patch('/:id/stock',
+  authenticate, authorize('ADMIN','CHEF'),
+  [
+    param('id').isMongoId(),
+    body('dailyLimit').custom(v => v === null || (Number.isInteger(v) && v >= 0))
+  ],
+  validate,
+  ctrl.setStock
 )
 
 // Delete (ADMIN + CHEF)

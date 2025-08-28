@@ -1,3 +1,4 @@
+// server/src/models/Food.js
 const mongoose = require('mongoose')
 
 const foodSchema = new mongoose.Schema(
@@ -14,11 +15,11 @@ const foodSchema = new mongoose.Schema(
     description: { type: String, default: '' },
     tags: { type: [String], default: [] }, // e.g. ['spicy','sour','salad']
 
-    // availability (effective shown to customers = isActiveGlobal && isActiveKitchen)
+    // availability (shown to customers = isActiveGlobal && isActiveKitchen)
     isActiveGlobal: { type: Boolean, default: true },   // admin control
     isActiveKitchen: { type: Boolean, default: true },  // chef control
 
-    // optional daily portions control
+    // daily portions control
     dailyLimit:     { type: Number, default: null }, // null = unlimited
     stockDate:      { type: String,  default: null }, // 'YYYY-MM-DD'
     stockRemaining: { type: Number,  default: null },

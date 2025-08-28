@@ -1,4 +1,4 @@
-// models/Package.js
+// server/src/models/Package.js
 const mongoose = require('mongoose')
 
 const packageItemSchema = new mongoose.Schema({
@@ -7,7 +7,6 @@ const packageItemSchema = new mongoose.Schema({
 }, { _id: false })
 
 const packageSchema = new mongoose.Schema({
-  // Restrict to 3 types and also make name unique so each type exists once
   name: { 
     type: String, 
     required: true, 
@@ -16,13 +15,19 @@ const packageSchema = new mongoose.Schema({
     trim: true
   },
   slug: { type: String, unique: true, index: true },
+
   description: { type: String, default: '' },
   imageUrl: { type: String, default: '' },
-  items: { type: [packageItemSchema], default: [] }, // required in controller
+
+  items: { type: [packageItemSchema], default: [] },
   isActive: { type: Boolean, default: true },
+
+  // NEW: daily stock for packages (optional; null = unlimited)
+  dailyLimit:     { type: Number, default: null },
+  stockDate:      { type: String,  default: null },   // 'YYYY-MM-DD'
+  stockRemaining: { type: Number,  default: null },
 }, { timestamps: true })
 
-/* simple slugify */
 function toSlug(s) {
   return String(s || '')
     .toLowerCase()

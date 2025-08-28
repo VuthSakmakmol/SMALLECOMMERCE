@@ -6,11 +6,10 @@ const loading = ref(false)
 const rows = ref([])
 const q = ref('')
 
+/* ✂ Removed Parent + Order headers */
 const headers = [
   { title: 'Name',   key: 'name' },
   { title: 'Slug',   key: 'slug' },
-  { title: 'Parent', key: 'parent' },
-  { title: 'Order',  key: 'order', align: 'center' },
   { title: 'Active', key: 'active', align: 'center' },
 ]
 
@@ -28,7 +27,6 @@ async function load () {
   try {
     const params = new URLSearchParams()
     if (q.value) params.set('q', q.value)
-    // Chef should see all; if you want only active, add activeOnly=true
     const { data } = await api.get(`/categories?${params.toString()}`)
     rows.value = data
   } finally {
@@ -36,14 +34,8 @@ async function load () {
   }
 }
 
-function parentName (row) {
-  return rows.value.find(r => r._id === row.parentId)?.name || '—'
-}
-
 async function toggle (row, value) {
-  // Backend allows ADMIN | CHEF to toggle
   const { data } = await api.patch(`/categories/${row._id}/toggle`, { value })
-  // Update local row
   const i = rows.value.findIndex(r => r._id === data._id)
   if (i !== -1) rows.value[i] = data
 }
@@ -89,14 +81,6 @@ onMounted(load)
         :items-per-page="10"
         class="rounded-xl"
       >
-        <template #item.parent="{ item }">
-          {{ parentName(item) }}
-        </template>
-
-        <template #item.order="{ item }">
-          <div class="text-center">{{ item.order ?? 0 }}</div>
-        </template>
-
         <template #item.active="{ item }">
           <div class="d-flex justify-center">
             <v-switch
@@ -110,7 +94,6 @@ onMounted(load)
       </v-data-table>
     </div>
   </v-card>
-  
 </template>
 
 <style scoped>

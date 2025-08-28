@@ -1,12 +1,6 @@
 // server/src/models/Order.js
 const mongoose = require('mongoose')
 
-/**
- * Order Item (snapshot)
- * - kind: 'FOOD' or 'PACKAGE'
- * - For FOOD, provide foodId; for PACKAGE, provide packageId
- * - name/unitPrice are optional snapshots; price is ignored by the app (free)
- */
 const orderItemSchema = new mongoose.Schema(
   {
     kind:      { type: String, enum: ['FOOD', 'PACKAGE'], required: true },
@@ -14,14 +8,13 @@ const orderItemSchema = new mongoose.Schema(
     packageId: { type: mongoose.Schema.Types.ObjectId, ref: 'Package' },
     qty:       { type: Number, min: 1, required: true },
 
-    // optional snapshots (safe to keep for compatibility; app treats everything as free)
+    // snapshots (app is free; price ignored)
     name:      { type: String, default: '' },
     unitPrice: { type: Number, default: 0 }
   },
   { _id: false }
 )
 
-// ensure correct id is present per item kind
 orderItemSchema.pre('validate', function (next) {
   if (this.kind === 'FOOD') {
     if (!this.foodId) return next(new Error('foodId is required for FOOD item'))
@@ -33,14 +26,13 @@ orderItemSchema.pre('validate', function (next) {
   next()
 })
 
-const STATUS = ['PENDING', 'ACCEPTED', 'COOKING', 'READY', 'DELIVERED', 'CANCELED', 'PLACED']
-// Default is PENDING to match your routes/filters
-const TYPE = ['INDIVIDUAL', 'GROUP', 'WORKSHOP']
+const ORDER_TYPES = ['INDIVIDUAL', 'GROUP', 'WORKSHOP']
+const STATUSES    = ['PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
 const orderSchema = new mongoose.Schema(
   {
-    type:        { type: String, enum: TYPE, required: true },
-    status:      { type: String, enum: STATUS, default: 'PENDING', index: true },
+    type:        { type: String, enum: ORDER_TYPES, required: true },
+    status:      { type: String, enum: STATUSES, default: 'PLACED', index: true },
 
     customerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     groupKey:    { type: String, default: null },
@@ -55,20 +47,25 @@ const orderSchema = new mongoose.Schema(
       }
     },
 
-    // kept for compatibility; always 0 in free mode
+    // free mode
     grandTotal:  { type: Number, default: 0 },
 
-    // timestamps for lifecycle (optional, used by UI)
+    // stock control
+    stockCommitted: { type: Boolean, default: false },
+
+    // lifecycle timestamps
     acceptedAt:  { type: Date, default: null },
-    startedAt:   { type: Date, default: null }, // cooking started
+    cookingAt:   { type: Date, default: null },
     readyAt:     { type: Date, default: null },
     deliveredAt: { type: Date, default: null },
-    canceledAt:  { type: Date, default: null }
+    canceledAt:  { type: Date, default: null },
+
+    createdBy:   { type: String, default: null },
+    updatedBy:   { type: String, default: null }
   },
   { timestamps: true }
 )
 
-// helpful indexes
 orderSchema.index({ createdAt: -1 })
 orderSchema.index({ status: 1, createdAt: -1 })
 

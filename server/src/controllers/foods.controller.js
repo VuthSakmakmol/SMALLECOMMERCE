@@ -1,3 +1,4 @@
+// server/src/controllers/foods.controller.js
 const dayjs = require('dayjs')
 const Food = require('../models/Food')
 
@@ -9,7 +10,6 @@ const list = async (req, res, next) => {
     if (String(activeOnly) === 'true') {
       filter.isActiveGlobal = true
       filter.isActiveKitchen = true
-      // also hide zero stock when using daily limit
       filter.$or = [{ dailyLimit: null }, { stockRemaining: { $gt: 0 } }]
     }
     if (categoryId) filter.categoryId = categoryId
@@ -33,9 +33,7 @@ const getOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-/** POST /api/foods (ADMIN | CHEF)
- * body: { name, categoryId, imageUrl?, description?, tags?[] }
- */
+/** POST /api/foods (ADMIN | CHEF) */
 const create = async (req, res, next) => {
   try {
     const payload = {
@@ -94,7 +92,7 @@ const toggle = async (req, res, next) => {
 
 /** PATCH /api/foods/:id/stock (ADMIN | CHEF)
  * body: { dailyLimit: number|null }
- * Sets today's portions (resets remaining). Null = unlimited (removes stock tracking).
+ * Sets today's portions (resets remaining). Null = unlimited.
  */
 const setStock = async (req, res, next) => {
   try {

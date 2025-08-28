@@ -1,15 +1,20 @@
-// controllers/package.controller.js
+// server/src/controllers/package.controller.js
+const dayjs = require('dayjs')
 const Package = require('../models/Package')
 const Food = require('../models/Food')
 
 const ALLOWED_NAMES = ['Individual', 'Group', 'Workshop']
 
 // GET /api/packages?activeOnly=true&q=...
+// When activeOnly=true: also hide zero-stock packages (if dailyLimit is used)
 const list = async (req, res, next) => {
   try {
     const { activeOnly, q } = req.query
     const filter = {}
-    if (String(activeOnly) === 'true') filter.isActive = true
+    if (String(activeOnly) === 'true') {
+      filter.isActive = true
+      filter.$or = [{ dailyLimit: null }, { stockRemaining: { $gt: 0 } }]
+    }
     if (q) filter.name = { $regex: q, $options: 'i' }
 
     const rows = await Package.find(filter).sort({ name: 1 }).lean()
@@ -34,17 +39,14 @@ const create = async (req, res, next) => {
       return res.status(400).json({ message: 'Package name must be Individual, Group, or Workshop' })
     }
 
-    // Prevent duplicate type
+    // prevent duplicate type
     const exists = await Package.findOne({ name })
-    if (exists) {
-      return res.status(400).json({ message: `${name} package already exists` })
-    }
+    if (exists) return res.status(400).json({ message: `${name} package already exists` })
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Package must contain at least one item' })
     }
 
-    // Validate foods exist
     const foodIds = items.map(i => i.foodId)
     const count = await Food.countDocuments({ _id: { $in: foodIds } })
     if (count !== items.length) {
@@ -60,16 +62,14 @@ const update = async (req, res, next) => {
   try {
     const { id } = req.params
     const payload = {}
-    ;['name','imageUrl','description','items','isActive'].forEach(k => {
+    ;['name','imageUrl','description','items','isActive','dailyLimit','stockDate','stockRemaining'].forEach(k => {
       if (req.body[k] !== undefined) payload[k] = req.body[k]
     })
 
     if (payload.name && !ALLOWED_NAMES.includes(payload.name)) {
       return res.status(400).json({ message: 'Invalid package name' })
     }
-
     if (payload.name) {
-      // if changing name, ensure target type is not taken by another doc
       const taken = await Package.findOne({ name: payload.name, _id: { $ne: id } })
       if (taken) return res.status(400).json({ message: `${payload.name} package already exists` })
     }
@@ -109,10 +109,31 @@ const removeOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-/**
- * OPTIONAL: Ensure the 3 package shells exist (empty items initially).
- * Call once at app boot (e.g., in server.js after DB connect).
+/** PATCH /api/packages/:id/stock  (ADMIN | CHEF)
+ * body: { dailyLimit: number|null }
+ * Set today's package stock (resets remaining). Null = unlimited.
  */
+const setStock = async (req, res, next) => {
+  try {
+    const { id } = req.params
+    const { dailyLimit } = req.body
+    const today = dayjs().format('YYYY-MM-DD')
+
+    const update = { dailyLimit: dailyLimit === null ? null : Number(dailyLimit) }
+    if (update.dailyLimit === null) {
+      update.stockDate = null
+      update.stockRemaining = null
+    } else {
+      update.stockDate = today
+      update.stockRemaining = update.dailyLimit
+    }
+    const row = await Package.findByIdAndUpdate(id, update, { new: true })
+    if (!row) return res.status(404).json({ message: 'Package not found' })
+    res.json(row)
+  } catch (e) { next(e) }
+}
+
+/** OPTIONAL: Ensure the 3 package shells exist */
 const ensureDefaultPackages = async () => {
   for (const name of ALLOWED_NAMES) {
     const exists = await Package.findOne({ name }).lean()
@@ -120,4 +141,4 @@ const ensureDefaultPackages = async () => {
   }
 }
 
-module.exports = { list, getOne, create, update, toggle, removeOne, ensureDefaultPackages }
+module.exports = { list, getOne, create, update, toggle, removeOne, setStock, ensureDefaultPackages }
