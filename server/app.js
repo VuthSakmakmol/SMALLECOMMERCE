@@ -1,126 +1,137 @@
 // server/app.js
-const express = require('express')
-const http = require('http')
-const cors = require('cors')
-const mongoose = require('mongoose')
-const dotenv = require('dotenv')
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const { Server } = require('socket.io');
 
-// Load .env
-dotenv.config()
+dotenv.config();
 
-/* ───────────────────────────────
-   Env variables
-──────────────────────────────── */
-const PORT = process.env.PORT || 5000
-const MONGODB_URI = process.env.MONGODB_URI
-const NODE_ENV = process.env.NODE_ENV || 'development'
+/* ───────────────────────── Uncaught/Unhandled ───────────────────────── */
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
+});
+process.on('unhandledRejection', (reason, p) => {
+  console.error('[Unhandled Rejection]', reason);
+});
 
-if (!MONGODB_URI) {
-  console.error('[Error] MONGODB_URI is not defined in .env')
-  process.exit(1)
+/* ───────────────────────── Env ───────────────────────── */
+const PORT = process.env.PORT || 4310;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*'; // lock to your origin later
+
+if (!MONGO_URI) {
+  console.error('❌ MONGODB_URI is not defined in .env');
+  process.exit(1);
 }
 
-const app = express()
-app.use(cors())
-app.use(express.json())
+/* ───────────────────────── App + Server ───────────────────────── */
+const app = express();
+const server = http.createServer(app);
 
-/* ───────────────────────────────
-   MongoDB connection
-──────────────────────────────── */
-mongoose.set('strictQuery', true)
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => console.log('[MongoDB] Connected successfully'))
-  .catch(err => {
-    console.error('[MongoDB] Connection error:', err.message)
-    process.exit(1)
-  })
-
-/* ───────────────────────────────
-   HTTP server + Socket.IO
-──────────────────────────────── */
-const server = http.createServer(app)
-const { Server } = require('socket.io')
+/* ───────────────────────── Socket.IO ───────────────────────── */
 const io = new Server(server, {
-  cors: {
-    origin: '*', // TODO: restrict to your frontend origin in production
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-  }
-})
-
+  cors: { origin: FRONTEND_ORIGIN, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+  path: '/socket.io',
+});
 io.on('connection', (socket) => {
-  // role = ADMIN | CHEF | CUSTOMER
-  // userId: for customers
-  // kitchenId: for chefs (optional)
-  // groupKey: table/room key (optional)
+  console.log('📡 WebSocket connected:', socket.id);
+
   socket.on('join', ({ role, userId, kitchenId, groupKey }) => {
-    if (role === 'ADMIN') {
-      socket.join('room:admin')
-    }
+    if (role === 'ADMIN') socket.join('room:admin');
     if (role === 'CHEF') {
-      socket.join('room:chef') // global room for all chefs
-      socket.join(`room:chef:${kitchenId || 'default'}`)
+      socket.join('room:chef');
+      socket.join(`room:chef:${kitchenId || 'default'}`);
     }
-    if (role === 'CUSTOMER' && userId) {
-      socket.join(`room:customer:${userId}`)
-    }
-    if (groupKey) {
-      socket.join(`room:group:${groupKey}`)
-    }
-  })
+    if (role === 'CUSTOMER' && userId) socket.join(`room:customer:${userId}`);
+    if (groupKey) socket.join(`room:group:${groupKey}`);
+  });
 
-  // let the client subscribe to a specific order
-  socket.on('join-order', ({ orderId }) => {
-    if (orderId) socket.join(`room:order:${orderId}`)
-  })
-})
+  socket.on('join-order', ({ orderId }) => orderId && socket.join(`room:order:${orderId}`));
 
-app.set('io', io)
+  socket.on('disconnect', () => console.log('❌ WebSocket disconnected:', socket.id));
+});
+app.set('io', io);
 
-/* ───────────────────────────────
-   Routes
-──────────────────────────────── */
-const authRoutes     = require('./src/routes/auth.routes')
-const orderRoutes    = require('./src/routes/orders.routes')     // plural
-const categoryRoutes = require('./src/routes/categories.routes')
-const foodRoutes     = require('./src/routes/foods.routes')
-const userRoutes     = require('./src/routes/users.routes')
-const packageRoutes  = require('./src/routes/packages.routes')   // NEW (workshop bundles)
-const reportRoutes = require('./src/routes/reports.routes')
+/* ───────────────────────── Middleware (ORDER MATTERS) ───────────────────────── */
+// 1) CORS first
+app.use(cors({ origin: FRONTEND_ORIGIN }));
 
+// 2) Body parsers (large limits if you upload images/files)
+app.use(express.json({ limit: '800mb' }));
+app.use(express.urlencoded({ limit: '800mb', extended: true }));
 
+// 3) Static buckets (uploads/public)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
-app.use('/api/health', (req, res) => {
+/* ───────────────────────── API Routes ───────────────────────── */
+app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     env: NODE_ENV,
     mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    time: new Date().toISOString()
-  })
-})
+    time: new Date().toISOString(),
+  });
+});
 
-app.use('/api/auth', authRoutes)
-app.use('/api/orders', orderRoutes)
-app.use('/api/categories', categoryRoutes)
-app.use('/api/foods', foodRoutes) // fixed typo
-app.use('/api/users', userRoutes)
-app.use('/api/packages', packageRoutes) // NEW
-app.use('/api/reports', reportRoutes)
+// mount your routers
+app.use('/api/auth', require('./src/routes/auth.routes'));
+app.use('/api/orders', require('./src/routes/orders.routes'));
+app.use('/api/categories', require('./src/routes/categories.routes'));
+app.use('/api/foods', require('./src/routes/foods.routes'));
+app.use('/api/users', require('./src/routes/users.routes'));
+app.use('/api/packages', require('./src/routes/packages.routes'));
+app.use('/api/reports', require('./src/routes/reports.routes'));
 
-/* ───────────────────────────────
-   Global error handler
-──────────────────────────────── */
+/* ───────────────────────── Error logger (AFTER routes) ───────────────────────── */
 app.use((err, req, res, next) => {
-  console.error('[Error]', err)
+  console.error('[Backend Error]', {
+    method: req.method,
+    url: req.originalUrl,
+    message: err?.message,
+    stack: err?.stack,
+  });
   res.status(err.status || 500).json({
+    success: false,
     message: err.message || 'Server error',
-    details: err.details || null
-  })
-})
+  });
+});
 
-/* ───────────────────────────────
-   Start server
-──────────────────────────────── */
-server.listen(PORT, () => {
-  console.log(`[Server] Listening on http://localhost:${PORT}`)
-})
+/* ───────────────────────── Frontend SPA (LAST) ───────────────────────── */
+const FRONT_DIST = path.join(__dirname, '../frontend/dist');
+app.use(express.static(FRONT_DIST));
+// SPA fallback — keep this LAST handler
+app.get(/.*/, (req, res) => res.sendFile(path.join(FRONT_DIST, 'index.html')));
+
+/* ───────────────────────── Mongo + Start ───────────────────────── */
+mongoose.set('strictQuery', true);
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch((err) => {
+    console.error('❌ MongoDB connection error:', err.message);
+    process.exit(1);
+  });
+
+server.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
+
+/* ───────────────────────── Graceful shutdown ───────────────────────── */
+const shutdown = async (signal) => {
+  console.log(`\n${signal} received, shutting down...`);
+  try {
+    await mongoose.connection.close();
+    server.close(() => {
+      console.log('🛑 HTTP server closed');
+      process.exit(0);
+    });
+  } catch (e) {
+    console.error('Forced shutdown', e);
+    process.exit(1);
+  }
+};
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
