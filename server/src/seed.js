@@ -1,38 +1,35 @@
-// server/src/seed.js
-
 const mongoose = require('mongoose')
 const bcrypt = require('bcryptjs')
 const dotenv = require('dotenv')
-const User = require('./models/User')
-
+const User = require('./models/User') 
 dotenv.config()
 
 const MONGODB_URI = process.env.MONGODB_URI
+if (!MONGODB_URI) {
+  console.error('[Seed] Missing MONGODB_URI in .env')
+  process.exit(1)
+}
 
 const seedAdmin = async () => {
   try {
     await mongoose.connect(MONGODB_URI)
     console.log('[MongoDB] Connected for seeding')
 
-    const email = 'admin@example.com'
-    const password = 'admin123'
-    const name = 'Super Admin'
+    const ADMIN_NAME = process.env.ADMIN_NAME || 'admin'
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'
 
-    // Check if admin already exists
-    let admin = await User.findOne({ email })
+    let admin = await User.findOne({ name: ADMIN_NAME })
     if (admin) {
-      console.log('[Seed] Admin already exists:', admin.email)
+      console.log(`[Seed] Admin already exists: ${admin.name}`)
     } else {
-      const passwordHash = await bcrypt.hash(password, 10)
-      admin = new User({
-        name,
-        email,
+      const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10)
+      admin = await User.create({
+        name: ADMIN_NAME,
         passwordHash,
         role: 'ADMIN',
-        isActive: true
+        isActive: true,
       })
-      await admin.save()
-      console.log(`[Seed] Admin created -> email: ${email} | password: ${password}`)
+      console.log(`[Seed] Admin created -> username: ${ADMIN_NAME} | password: ${ADMIN_PASSWORD}`)
     }
 
     process.exit(0)

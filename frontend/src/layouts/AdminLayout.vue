@@ -80,6 +80,7 @@ const leftOffset = computed(() => {
       <v-app-bar-nav-icon @click="drawer = !drawer" />
       <v-toolbar-title>Admin</v-toolbar-title>
       <v-spacer />
+      <span v-if="auth.role === 'ADMIN'">{{ auth.user?.name }}</span>
       <v-btn v-if="mdAndUp" icon @click="rail = !rail">
         <v-icon>mdi-arrow-expand-left</v-icon>
       </v-btn>
