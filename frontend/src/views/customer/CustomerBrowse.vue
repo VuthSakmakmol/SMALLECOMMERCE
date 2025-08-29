@@ -117,10 +117,10 @@ onMounted(async () => { if(route.query.cat) cat.value=String(route.query.cat); a
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="5">
-          <v-text-field v-model="q" label="Search foods or packages" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="refresh"/>
+          <v-text-field v-model="q" label="Search foods or packages" density="compact" variant="outlined" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="refresh"/>
         </v-col>
         <v-col cols="12" md="4">
-          <v-select :items="categoryOptions" v-model="cat" label="Category" :disabled="tab!=='foods'" @update:modelValue="loadFoods"/>
+          <v-select :items="categoryOptions" density="compact" variant="outlined" v-model="cat" label="Category" :disabled="tab!=='foods'" @update:modelValue="loadFoods"/>
         </v-col>
         <v-col cols="12" md="3">
           <v-btn :loading="loading" block @click="refresh"><v-icon start>mdi-refresh</v-icon> Refresh</v-btn>
@@ -135,9 +135,9 @@ onMounted(async () => { if(route.query.cat) cat.value=String(route.query.cat); a
       <v-window v-model="tab">
         <v-window-item value="foods">
           <v-row>
-            <v-col v-for="f in foods" :key="f._id" cols="12" sm="6" md="4" lg="3">
+            <v-col v-for="f in foods" :key="f._id" cols="12" sm="6" md="4" lg="3" class="mb-4">
               <v-card class="h-100 rounded-xl">
-                <v-img :src="f.imageUrl || 'https://via.placeholder.com/600x400?text=Food'" height="150" cover />
+                <v-img :src="f.imageUrl || 'https://via.placeholder.com/600x400?text=Food'" height="270" cover />
                 <v-card-title class="text-subtitle-1">{{ f.name }}</v-card-title>
                 <v-card-subtitle>{{ f.categoryId?.name || '—' }}</v-card-subtitle>
                 <v-card-text>
@@ -163,9 +163,9 @@ onMounted(async () => { if(route.query.cat) cat.value=String(route.query.cat); a
 
         <v-window-item value="packages">
           <v-row>
-            <v-col v-for="p in packages" :key="p._id" cols="12" sm="6" md="4" lg="3">
+            <v-col v-for="p in packages" :key="p._id" cols="12" sm="6" md="4" lg="3" class="mb-4">
               <v-card class="h-100 rounded-xl">
-                <v-img :src="p.imageUrl || 'https://via.placeholder.com/600x400?text=Package'" height="150" cover />
+                <v-img :src="p.imageUrl || 'https://via.placeholder.com/600x400?text=Package'" height="270" cover />
                 <v-card-title class="text-subtitle-1">{{ p.name }}</v-card-title>
                 <v-card-text>
                   <div class="text-caption text-medium-emphasis mb-2">{{ p.description || ' ' }}</div>

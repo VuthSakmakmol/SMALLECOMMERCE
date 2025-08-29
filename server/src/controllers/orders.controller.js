@@ -14,6 +14,8 @@ const STATUS = {
 }
 const ORDER_TYPES = ['INDIVIDUAL', 'GROUP', 'WORKSHOP']
 
+/* ───────────────── helpers ───────────────── */
+
 function emitOrder (req, orderObj, event) {
   const io = req.app.get('io')
   if (!io) return
@@ -23,11 +25,27 @@ function emitOrder (req, orderObj, event) {
   io.to(`room:order:${orderObj._id}`).emit(event, orderObj)
 }
 
+// Ensure `customerId` is a string and attach `customerName`
+// Works with plain objects or mongoose docs (with or without .lean()).
+function serializeOrder(o) {
+  const x = o?.toObject ? o.toObject() : o || {}
+  const cust = x.customerId
+  const customerId = cust && typeof cust === 'object'
+    ? String(cust._id || cust.id || '')
+    : String(cust || '')
+
+  const customerName = cust && typeof cust === 'object'
+    ? (cust.name || null)
+    : (x.customerName || null)
+
+  return { ...x, customerId, customerName }
+}
+
 /* ---------- stock helpers ---------- */
 
-// Build maps for foods and packages separately
+// Build maps for packages separately (packageId -> qty)
 function buildPackageMap(items) {
-  const pkgMap = new Map() // packageId -> qty
+  const pkgMap = new Map()
   for (const it of items) {
     if (String(it.kind).toUpperCase() !== 'PACKAGE' || !it.packageId) continue
     const q = Math.max(1, parseInt(it.qty, 10) || 1)
@@ -126,7 +144,7 @@ async function restoreFoods(session, foodMap) {
   }
 }
 
-/* ---------- controllers ---------- */
+/* ───────────────── controllers ───────────────── */
 
 // GET /orders?status=&type=&groupKey=&q=
 async function list (req, res, next) {
@@ -143,9 +161,13 @@ async function list (req, res, next) {
       filter.$or = [{ groupKey: rx }, { notes: rx }, { 'items.name': rx }]
     }
 
-    const rows = await Order.find(filter).sort({ createdAt: -1 }).lean()
+    // populate customer name
+    const rows = await Order.find(filter)
+      .sort({ createdAt: -1 })
+      .populate({ path: 'customerId', select: 'name' })
+      .lean()
 
-    // 🔧 Enrich missing item images for older orders
+    // Enrich missing item images for older orders
     const needFoodIds = new Set()
     const needPkgIds  = new Set()
     for (const o of rows) {
@@ -156,6 +178,7 @@ async function list (req, res, next) {
         }
       }
     }
+
     let foodMap = new Map(), pkgMap = new Map()
     if (needFoodIds.size) {
       const foods = await Food.find({ _id: { $in: [...needFoodIds] } }).select('_id imageUrl').lean()
@@ -174,17 +197,18 @@ async function list (req, res, next) {
       }
     }
 
-    res.json(rows)
+    // add customerName + string customerId
+    res.json(rows.map(serializeOrder))
   } catch (e) { next(e) }
 }
-
 
 // GET /orders/:id
 async function getOne (req, res, next) {
   try {
-    const row = await Order.findById(req.params.id).lean()
+    const row = await Order.findById(req.params.id)
+      .populate({ path: 'customerId', select: 'name' })
     if (!row) return res.status(404).json({ message: 'Order not found' })
-    res.json(row)
+    res.json(serializeOrder(row))
   } catch (e) { next(e) }
 }
 
@@ -207,8 +231,6 @@ async function create (req, res, next) {
     const prepared = []
     for (const it of items) {
       const kind = String(it.kind || '').toUpperCase()
-
-      // 👇 normalize qty here too
       const qty = Math.max(1, parseInt(it.qty, 10) || 1)
 
       if (kind === 'FOOD') {
@@ -224,8 +246,7 @@ async function create (req, res, next) {
       }
     }
 
-
-    // reserve both packages and foods
+    // reserve packages and foods
     const pkgMap  = buildPackageMap(items)
     const foodMap = await expandToFoods(items)
     await reservePackages(session, pkgMap)
@@ -245,7 +266,10 @@ async function create (req, res, next) {
     }], { session })
 
     await session.commitTransaction()
-    const order = doc.toObject()
+
+    // populate customer and serialize before emitting/returning
+    await doc.populate({ path: 'customerId', select: 'name' })
+    const order = serializeOrder(doc)
     emitOrder(req, order, 'order:new')
     res.status(201).json(order)
   } catch (e) {
@@ -274,8 +298,11 @@ async function accept (req, res, next) {
     await order.save({ session })
 
     await session.commitTransaction()
-    emitOrder(req, order.toObject(), 'order:status')
-    res.json(order)
+
+    await order.populate({ path: 'customerId', select: 'name' })
+    const payload = serializeOrder(order)
+    emitOrder(req, payload, 'order:status')
+    res.json(payload)
   } catch (e) {
     await session.abortTransaction()
     next(e)
@@ -296,8 +323,11 @@ async function start (req, res, next) {
     order.cookingAt = new Date()
     order.updatedBy = req.user?._id || null
     await order.save()
-    emitOrder(req, order.toObject(), 'order:status')
-    res.json(order)
+
+    await order.populate({ path: 'customerId', select: 'name' })
+    const payload = serializeOrder(order)
+    emitOrder(req, payload, 'order:status')
+    res.json(payload)
   } catch (e) { next(e) }
 }
 
@@ -313,8 +343,11 @@ async function ready (req, res, next) {
     order.readyAt = new Date()
     order.updatedBy = req.user?._id || null
     await order.save()
-    emitOrder(req, order.toObject(), 'order:status')
-    res.json(order)
+
+    await order.populate({ path: 'customerId', select: 'name' })
+    const payload = serializeOrder(order)
+    emitOrder(req, payload, 'order:status')
+    res.json(payload)
   } catch (e) { next(e) }
 }
 
@@ -337,8 +370,11 @@ async function deliver (req, res, next) {
     order.deliveredAt = new Date()
     order.updatedBy = req.user?._id || null
     await order.save()
-    emitOrder(req, order.toObject(), 'order:status')
-    res.json(order)
+
+    await order.populate({ path: 'customerId', select: 'name' })
+    const payload = serializeOrder(order)
+    emitOrder(req, payload, 'order:status')
+    res.json(payload)
   } catch (e) { next(e) }
 }
 
@@ -353,8 +389,7 @@ async function cancel (req, res, next) {
       return res.status(400).json({ message: 'Order already finished' })
     }
 
-    // 🔁 Always restore foods + packages when canceling,
-    //     regardless of whether it was previously accepted/committed.
+    // Always restore foods + packages when canceling
     const pkgMap  = buildPackageMap(order.items)
     const foodMap = await expandToFoods(order.items)
     await restorePackages(session, pkgMap)
@@ -363,13 +398,15 @@ async function cancel (req, res, next) {
     order.status = STATUS.CANCELED
     order.canceledAt = new Date()
     order.updatedBy = req.user?._id || null
-    // optional: since we restored stock, mark as not committed
     order.stockCommitted = false
     await order.save({ session })
 
     await session.commitTransaction()
-    emitOrder(req, order.toObject(), 'order:status')
-    res.json(order)
+
+    await order.populate({ path: 'customerId', select: 'name' })
+    const payload = serializeOrder(order)
+    emitOrder(req, payload, 'order:status')
+    res.json(payload)
   } catch (e) {
     await session.abortTransaction()
     next(e)
@@ -377,7 +414,6 @@ async function cancel (req, res, next) {
     session.endSession()
   }
 }
-
 
 module.exports = {
   list,

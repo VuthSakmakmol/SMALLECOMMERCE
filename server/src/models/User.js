@@ -10,7 +10,7 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ROLES, required: true, default: 'CUSTOMER' },
     isActive: { type: Boolean, default: true },
     telegramChatId: { type: String, default: null },
-    kitchenId: { type: String, default: null } // for CHEF if you use kitchens later
+    kitchenId: { type: String, default: null }
   },
   { timestamps: true }
 )
