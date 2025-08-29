@@ -1,18 +1,28 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import dayjs from 'dayjs'
 import api from '@/utils/api'
 import socket from '@/utils/socket'
-import dayjs from 'dayjs'
 
+/* ───────────────── state ───────────────── */
 const loading = ref(false)
 const rows = ref([])
+
 const q = ref('')
-const type = ref('ALL') // ALL | INDIVIDUAL | GROUP | WORKSHOP
-const status = ref('ALL') // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
+const type = ref('ALL')      // ALL | INDIVIDUAL | GROUP | WORKSHOP
+const status = ref('ALL')    // ACTIVE | ALL | PLACED | ACCEPTED | COOKING | READY | DELIVERED | CANCELED
 const types = ['ALL','INDIVIDUAL','GROUP','WORKSHOP']
 const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
-// 💡 Removed the "Total" column
+// dialog
+const detailOpen = ref(false)
+const selected = ref(null)
+
+// caches for package + food lookups (to render package contents nicely)
+const pkgCache = ref(new Map())   // id -> { _id, name, imageUrl, items:[{foodId,qty}] }
+const foodCache = ref(new Map())  // id -> { _id, name, imageUrl }
+
+/* ───────────────── table ───────────────── */
 const headers = [
   { title: 'Time', key: 'createdAt', sortable: true },
   { title: 'Type', key: 'type' },
@@ -22,9 +32,14 @@ const headers = [
   { title: 'Actions', key: 'actions', align: 'end' }
 ]
 
-function statusColor(s) {
+function statusColor (s) {
   return { PLACED:'grey', ACCEPTED:'primary', COOKING:'deep-purple', READY:'orange', DELIVERED:'green', CANCELED:'red' }[s] || 'grey'
 }
+function prettyWhen (d) {
+  const t = dayjs(d)
+  return `${t.format('HH:mm')} · ${t.format('MMM D')}`
+}
+function who (r) { return r.groupKey || r.customerName || '—' }
 
 const filtered = computed(() => {
   let list = rows.value
@@ -42,7 +57,8 @@ const filtered = computed(() => {
   return list
 })
 
-async function load() {
+/* ───────────────── fetch ───────────────── */
+async function load () {
   loading.value = true
   try {
     const params = new URLSearchParams()
@@ -55,19 +71,9 @@ async function load() {
   }
 }
 
-function prettyWhen(d) {
-  const t = dayjs(d)
-  return `${t.format('HH:mm')}  ·  ${t.format('MMM D')}`
-}
-
-function describeWho(r) {
-  if (r.groupKey) return r.groupKey
-  if (r.customerName) return r.customerName
-  return '—'
-}
-
-function canNext(r) { return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status) }
-function nextActionPath(r) {
+/* ───────────────── actions ───────────────── */
+function canNext (r) { return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status) }
+function nextPath (r) {
   switch (r.status) {
     case 'PLACED':   return `/orders/${r._id}/accept`
     case 'ACCEPTED': return `/orders/${r._id}/start`
@@ -76,30 +82,72 @@ function nextActionPath(r) {
     default:         return null
   }
 }
-
-async function advance(r) {
-  const path = nextActionPath(r)
-  if (!path) return
-  const { data } = await api.patch(path)
-  upsertOrder(data)
+async function advance (r) {
+  const p = nextPath(r)
+  if (!p) return
+  const { data } = await api.patch(p)
+  upsert(data)
 }
-
-async function cancel(r) {
+async function cancel (r) {
   const { data } = await api.patch(`/orders/${r._id}/cancel`)
-  upsertOrder(data)
+  upsert(data)
+}
+function upsert (o) {
+  const i = rows.value.findIndex(x => x._id === o._id)
+  if (i === -1) rows.value.unshift(o)
+  else rows.value[i] = o
 }
 
-function upsertOrder(o) {
-  const idx = rows.value.findIndex(x => x._id === o._id)
-  if (idx === -1) rows.value.unshift(o)
-  else rows.value[idx] = o
+/* ─────────────── detail dialog helpers ─────────────── */
+async function fetchPackage(id) {
+  if (!id) return null
+  const key = String(id)
+  if (pkgCache.value.has(key)) return pkgCache.value.get(key)
+  const { data } = await api.get(`/packages/${key}`)
+  pkgCache.value.set(key, data)
+  return data
+}
+async function fetchFood(id) {
+  if (!id) return null
+  const key = String(id)
+  if (foodCache.value.has(key)) return foodCache.value.get(key)
+  const { data } = await api.get(`/foods/${key}`)
+  foodCache.value.set(key, data)
+  return data
 }
 
+// Preload any package contents (and their foods) for the selected order.
+// Images for top-level items already come from order snapshots.
+async function preloadForOrder(order) {
+  const pkgIds = (order.items || [])
+    .filter(it => it.kind === 'PACKAGE' && it.packageId)
+    .map(it => String(it.packageId))
+  if (!pkgIds.length) return
+
+  await Promise.all(pkgIds.map(fetchPackage))
+
+  // fetch foods appearing inside those packages
+  const foods = []
+  for (const pid of pkgIds) {
+    const pkg = pkgCache.value.get(pid)
+    for (const line of (pkg?.items || [])) foods.push(String(line.foodId))
+  }
+  const uniqueFoods = [...new Set(foods)]
+  await Promise.all(uniqueFoods.map(fetchFood))
+}
+
+async function openDetail(order) {
+  selected.value = order
+  detailOpen.value = true
+  try { await preloadForOrder(order) } catch (e) { /* ignore */ }
+}
+
+/* ───────────────── sockets ───────────────── */
 onMounted(() => {
   load()
   socket.emit('join', { role: 'ADMIN' })
-  const onNew = (order) => upsertOrder(order)
-  const onStatus = (order) => upsertOrder(order)
+  const onNew = (order) => upsert(order)
+  const onStatus = (order) => upsert(order)
   socket.on('order:new', onNew)
   socket.on('order:status', onStatus)
   onBeforeUnmount(() => {
@@ -123,14 +171,20 @@ onMounted(() => {
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="4">
-          <v-text-field v-model="q" label="Search (customer, group, item)"
-                        prepend-inner-icon="mdi-magnify" clearable variant="outlined" density="compact" />
+          <v-text-field
+            v-model="q"
+            label="Search (customer, group, item)"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            variant="outlined"
+            density="compact"
+          />
         </v-col>
         <v-col cols="12" md="3">
-          <v-select :items="types" v-model="type" label="Type" variant="outlined" density="compact" />
+          <v-select :items="types" v-model="type" label="Type" variant="outlined" density="compact"/>
         </v-col>
         <v-col cols="12" md="3">
-          <v-select :items="statuses" v-model="status" label="Status" variant="outlined" density="compact" />
+          <v-select :items="statuses" v-model="status" label="Status" variant="outlined" density="compact"/>
         </v-col>
       </v-row>
 
@@ -141,21 +195,25 @@ onMounted(() => {
 
         <template #item.who="{ item }">
           <div class="d-flex flex-column">
-            <strong>{{ describeWho(item) }}</strong>
+            <strong>{{ who(item) }}</strong>
             <small class="text-medium-emphasis">#{{ item._id.slice(-6) }}</small>
           </div>
         </template>
 
-        <!-- Clear per-item display (no price) -->
+        <!-- Show item avatar + name; click to open details -->
         <template #item.items="{ item }">
-          <div class="d-flex flex-wrap ga-1">
+          <div class="d-flex flex-wrap ga-2">
             <v-chip
               v-for="it in item.items"
               :key="`${it.kind}:${it.foodId || it.packageId}:${it.name || ''}`"
               size="small"
-              :prepend-icon="it.kind === 'PACKAGE' ? 'mdi-briefcase-variant' : 'mdi-silverware-fork-knife'"
+              class="pa-1"
               variant="outlined"
+              @click="openDetail(item)"
             >
+              <v-avatar start size="22">
+                <v-img :src="it.imageUrl || 'https://via.placeholder.com/40?text=Img'" />
+              </v-avatar>
               {{ it.qty }}× {{ it.name || 'Item' }}
             </v-chip>
           </div>
@@ -181,4 +239,77 @@ onMounted(() => {
       </v-data-table>
     </div>
   </v-card>
+
+  <!-- Details dialog -->
+  <v-dialog v-model="detailOpen" max-width="720">
+    <v-card>
+      <v-card-title>
+        Order #{{ selected?._id?.slice(-6) }} • {{ selected?.type }}
+      </v-card-title>
+
+      <v-card-text>
+        <div class="mb-2">
+          <strong>Placed:</strong> {{ selected?.createdAt ? prettyWhen(selected.createdAt) : '—' }}
+        </div>
+        <div class="mb-2">
+          <strong>Status:</strong>
+          <v-chip size="small" :color="statusColor(selected?.status || '')" label>
+            {{ selected?.status }}
+          </v-chip>
+        </div>
+        <div class="mb-2">
+          <strong>Customer / Group:</strong> {{ who(selected || {}) }}
+        </div>
+        <div class="mb-4">
+          <strong>Notes:</strong> {{ selected?.notes || '—' }}
+        </div>
+
+        <v-divider class="my-3" />
+
+        <h4 class="text-subtitle-1 mb-2">Items</h4>
+        <v-list density="comfortable">
+          <template v-for="it in selected?.items || []" :key="`${it.kind}:${it.foodId || it.packageId}:${it.name}`">
+            <v-list-item>
+              <template #prepend>
+                <v-avatar size="40">
+                  <v-img :src="it.imageUrl || 'https://via.placeholder.com/60?text=Img'" />
+                </v-avatar>
+              </template>
+              <v-list-item-title>{{ it.qty }}× {{ it.name }}</v-list-item-title>
+              <v-list-item-subtitle>{{ it.kind }}</v-list-item-subtitle>
+            </v-list-item>
+
+            <!-- If package, show its foods -->
+            <v-expand-transition>
+              <div v-if="it.kind==='PACKAGE' && pkgCache.get(String(it.packageId))" class="pl-12 pb-3">
+                <div class="text-caption text-medium-emphasis mb-1">Includes:</div>
+                <div class="d-flex flex-wrap ga-2">
+                  <template
+                    v-for="line in pkgCache.get(String(it.packageId)).items"
+                    :key="String(line.foodId)"
+                  >
+                    <v-chip size="small" variant="tonal" class="pa-1">
+                      <v-avatar start size="20">
+                        <v-img :src="(foodCache.get(String(line.foodId))?.imageUrl) || 'https://via.placeholder.com/40?text=Img'" />
+                      </v-avatar>
+                      ×{{ line.qty }} {{ foodCache.get(String(line.foodId))?.name || '...' }}
+                    </v-chip>
+                  </template>
+                </div>
+              </div>
+            </v-expand-transition>
+          </template>
+        </v-list>
+      </v-card-text>
+
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="detailOpen=false">Close</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
+
+<style scoped>
+.v-list-item + .v-list-item { border-top: 1px dashed rgba(0,0,0,.06); }
+</style>

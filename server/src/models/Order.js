@@ -1,19 +1,21 @@
 // server/src/models/Order.js
 const mongoose = require('mongoose')
 
+// add imageUrl to the order item snapshot
 const orderItemSchema = new mongoose.Schema(
   {
     kind:      { type: String, enum: ['FOOD', 'PACKAGE'], required: true },
     foodId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Food' },
     packageId: { type: mongoose.Schema.Types.ObjectId, ref: 'Package' },
-    qty:       { type: Number, min: 1, required: true },
-
-    // snapshots (app is free; price ignored)
+   
+    qty:       { type: Number, min: 1, required: true, default: 1 },
     name:      { type: String, default: '' },
-    unitPrice: { type: Number, default: 0 }
+    imageUrl:  { type: String, default: '' },   // 👈 NEW
+    unitPrice: { type: Number, default: 0 }     // ignored (free mode)
   },
   { _id: false }
 )
+
 
 orderItemSchema.pre('validate', function (next) {
   if (this.kind === 'FOOD') {

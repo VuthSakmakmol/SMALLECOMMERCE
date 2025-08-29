@@ -134,11 +134,8 @@ async function list (req, res, next) {
     const { status, type, groupKey, q } = req.query
     const filter = {}
 
-    if (status === 'ACTIVE') {
-      filter.status = { $nin: [STATUS.DELIVERED, STATUS.CANCELED] }
-    } else if (status) {
-      filter.status = status
-    }
+    if (status === 'ACTIVE') filter.status = { $nin: [STATUS.DELIVERED, STATUS.CANCELED] }
+    else if (status) filter.status = status
     if (type) filter.type = type
     if (groupKey) filter.groupKey = groupKey
     if (q && String(q).trim()) {
@@ -147,9 +144,40 @@ async function list (req, res, next) {
     }
 
     const rows = await Order.find(filter).sort({ createdAt: -1 }).lean()
+
+    // 🔧 Enrich missing item images for older orders
+    const needFoodIds = new Set()
+    const needPkgIds  = new Set()
+    for (const o of rows) {
+      for (const it of o.items || []) {
+        if (!it.imageUrl) {
+          if (it.kind === 'FOOD' && it.foodId) needFoodIds.add(String(it.foodId))
+          if (it.kind === 'PACKAGE' && it.packageId) needPkgIds.add(String(it.packageId))
+        }
+      }
+    }
+    let foodMap = new Map(), pkgMap = new Map()
+    if (needFoodIds.size) {
+      const foods = await Food.find({ _id: { $in: [...needFoodIds] } }).select('_id imageUrl').lean()
+      foodMap = new Map(foods.map(f => [String(f._id), f.imageUrl || '']))
+    }
+    if (needPkgIds.size) {
+      const pkgs = await Package.find({ _id: { $in: [...needPkgIds] } }).select('_id imageUrl').lean()
+      pkgMap = new Map(pkgs.map(p => [String(p._id), p.imageUrl || '']))
+    }
+    for (const o of rows) {
+      for (const it of o.items || []) {
+        if (!it.imageUrl) {
+          if (it.kind === 'FOOD' && it.foodId) it.imageUrl = foodMap.get(String(it.foodId)) || ''
+          if (it.kind === 'PACKAGE' && it.packageId) it.imageUrl = pkgMap.get(String(it.packageId)) || ''
+        }
+      }
+    }
+
     res.json(rows)
   } catch (e) { next(e) }
 }
+
 
 // GET /orders/:id
 async function getOne (req, res, next) {
@@ -176,23 +204,26 @@ async function create (req, res, next) {
     const items = Array.isArray(req.body.items) ? req.body.items : []
     if (!items.length) return res.status(400).json({ message: 'At least one item is required' })
 
-    // prepare snapshot items (free mode)
     const prepared = []
     for (const it of items) {
       const kind = String(it.kind || '').toUpperCase()
-      const qty  = Math.max(1, parseInt(it.qty, 10) || 1)
+
+      // 👇 normalize qty here too
+      const qty = Math.max(1, parseInt(it.qty, 10) || 1)
+
       if (kind === 'FOOD') {
-        const f = await Food.findById(it.foodId).select('_id name').session(session)
+        const f = await Food.findById(it.foodId).select('_id name imageUrl').session(session)
         if (!f) return res.status(400).json({ message: 'Food not found', id: it.foodId })
-        prepared.push({ kind: 'FOOD', foodId: f._id, name: f.name, qty, unitPrice: 0 })
+        prepared.push({ kind: 'FOOD', foodId: f._id, name: f.name, imageUrl: f.imageUrl || '', qty, unitPrice: 0 })
       } else if (kind === 'PACKAGE') {
-        const p = await Package.findById(it.packageId).select('_id name').session(session)
+        const p = await Package.findById(it.packageId).select('_id name imageUrl').session(session)
         if (!p) return res.status(400).json({ message: 'Package not found', id: it.packageId })
-        prepared.push({ kind: 'PACKAGE', packageId: p._id, name: p.name, qty, unitPrice: 0 })
+        prepared.push({ kind: 'PACKAGE', packageId: p._id, name: p.name, imageUrl: p.imageUrl || '', qty, unitPrice: 0 })
       } else {
         return res.status(400).json({ message: 'Invalid item kind', kind: it.kind })
       }
     }
+
 
     // reserve both packages and foods
     const pkgMap  = buildPackageMap(items)
@@ -311,7 +342,7 @@ async function deliver (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/cancel  (restore only if not committed)
+// PATCH /orders/:id/cancel  (ALWAYS restore stock)
 async function cancel (req, res, next) {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -322,16 +353,18 @@ async function cancel (req, res, next) {
       return res.status(400).json({ message: 'Order already finished' })
     }
 
-    if (!order.stockCommitted) {
-      const pkgMap  = buildPackageMap(order.items)
-      const foodMap = await expandToFoods(order.items)
-      await restorePackages(session, pkgMap)
-      await restoreFoods(session,  foodMap)
-    }
+    // 🔁 Always restore foods + packages when canceling,
+    //     regardless of whether it was previously accepted/committed.
+    const pkgMap  = buildPackageMap(order.items)
+    const foodMap = await expandToFoods(order.items)
+    await restorePackages(session, pkgMap)
+    await restoreFoods(session,  foodMap)
 
     order.status = STATUS.CANCELED
     order.canceledAt = new Date()
     order.updatedBy = req.user?._id || null
+    // optional: since we restored stock, mark as not committed
+    order.stockCommitted = false
     await order.save({ session })
 
     await session.commitTransaction()
@@ -344,6 +377,7 @@ async function cancel (req, res, next) {
     session.endSession()
   }
 }
+
 
 module.exports = {
   list,

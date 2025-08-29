@@ -61,12 +61,17 @@ async function placeOrder () {
     notes: cart.notes || '',
     items: cart.items
       .map(i => ({
-        kind: i.kind, // 'FOOD' | 'PACKAGE'
+        kind: i.kind,                         // 'FOOD' | 'PACKAGE'
         foodId:    i.kind === 'FOOD'    ? i.id : undefined,
         packageId: i.kind === 'PACKAGE' ? i.id : undefined,
+        // 👇 normalize to a positive integer; fallback to 1
         qty: Math.max(1, parseInt(i.qty, 10) || 1)
       }))
-      .filter(x => (x.kind === 'FOOD' && x.foodId) || (x.kind === 'PACKAGE' && x.packageId))
+      .filter(x =>
+        (x.kind === 'FOOD' && x.foodId) ||
+        (x.kind === 'PACKAGE' && x.packageId)
+      )
+
   }
 
   // ✅ only add groupKey if it's a real string for GROUP
