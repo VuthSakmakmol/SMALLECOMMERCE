@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import api from '@/utils/api'
+import api from '@/utils/api' // your axios instance
+
 
 export const useAuth = defineStore('auth', {
   state: () => ({
@@ -11,50 +12,74 @@ export const useAuth = defineStore('auth', {
   getters: {
     isAuthed: s => !!s.token,
     role: s => s.user?.role || null,
-    name: s => s.user?.name || '',
   },
   actions: {
-    setSession(token, user) {
+    _setAuth(token, user) {
       this.token = token
       this.user = user
       localStorage.setItem('token', token)
       localStorage.setItem('user', JSON.stringify(user))
     },
-    clearSession() {
+    _clear() {
       this.token = null
       this.user = null
       localStorage.removeItem('token')
       localStorage.removeItem('user')
     },
-    async login(username, password) {
-      this.loading = true
-      this.error = null
+
+    async login(id, password) {
+      this.loading = true; this.error = null
       try {
-        const { data } = await api.post('/auth/login', { username, password })
-        this.setSession(data.token, data.user)
+        const { data } = await api.post('/auth/login', { id, password })
+        this._setAuth(data.token, data.user)
         return true
       } catch (e) {
-        this.error = e?.response?.data?.message || e?.message || 'Login failed'
+        this.error = e?.response?.data?.message || 'Login failed'
+        this._clear()
         return false
-      } finally {
-        this.loading = false
-      }
+      } finally { this.loading = false }
     },
-    async register(username, password) {
-      this.loading = true
-      this.error = null
+
+    async registerGuest({ password, displayName, fromCompany }) {
+      this.loading = true; this.error = null
       try {
-        // backend register expects username+password and returns token+user
-        const { data } = await api.post('/auth/register', { username, password })
-        this.setSession(data.token, data.user)
+        const { data } = await api.post('/auth/register-guest', { password, displayName, fromCompany })
+        this._setAuth(data.token, data.user)
         return true
       } catch (e) {
-        this.error = e?.response?.data?.message || e?.message || 'Registration failed'
+        this.error = e?.response?.data?.message || 'Register failed'
+        this._clear()
         return false
-      } finally {
-        this.loading = false
-      }
+      } finally { this.loading = false }
     },
-    logout() { this.clearSession() }
+
+
+    async registerCustomer({ id, username, password }) {
+      this.loading = true; this.error = null
+      try {
+        const { data } = await api.post('/auth/register', { id, username, password })
+        this._setAuth(data.token, data.user)
+        return true
+      } catch (e) {
+        this.error = e?.response?.data?.message || 'Register failed'
+        this._clear()
+        return false
+      } finally { this.loading = false }
+    },
+
+    logout() { this._clear() },
+
+    // optional: refresh /me
+    async fetchMe() {
+      if (!this.token) return
+      this.loading = true; this.error = null
+      try {
+        const { data } = await api.get('/auth/me')
+        this.user = data.user
+        localStorage.setItem('user', JSON.stringify(this.user))
+      } catch (e) {
+        this._clear()
+      } finally { this.loading = false }
+    }
   }
 })

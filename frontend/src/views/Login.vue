@@ -11,29 +11,51 @@ const { smAndDown } = useDisplay()
 
 const tab = ref('login')
 
-// login
-const username = ref('')
+// -------- Login (by ID) --------
+const id = ref('')
 const password = ref('')
 const showPw   = ref(false)
 
-// register
-const rUsername = ref('')
-const rPassword = ref('')
-const rConfirm  = ref('')
-const rShowPw   = ref(false)
-const rShowPw2  = ref(false)
+// -------- Register --------
+const isGuest    = ref(true)   // default: Guest
+// employee-only
+const rId        = ref('')
+const rName      = ref('')
+// guest-only
+const guestFrom  = ref('')
+const guestName  = ref('')
+
+const rPassword  = ref('')
+const rConfirm   = ref('')
+const rShowPw    = ref(false)
+const rShowPw2   = ref(false)
+
+// show generated guest ID after success
+const generatedId  = ref('')
+const showIdDialog = ref(false)
 
 const rules = {
   required: v => !!String(v || '').trim() || 'Required',
   min6: v => String(v || '').length >= 6 || 'Min 6 characters',
+  match: v => v === rPassword.value || 'Passwords do not match',
 }
 
 const loginError = computed(() => auth.error)
 const regLoading = computed(() => auth.loading && tab.value === 'register')
-const canLogin = computed(() => username.value && password.value.length >= 6 && !auth.loading)
-const canRegister = computed(() =>
-  rUsername.value && rPassword.value.length >= 6 && rPassword.value === rConfirm.value && !regLoading.value
-)
+const canLogin = computed(() => id.value && password.value.length >= 6 && !auth.loading)
+
+const canRegister = computed(() => {
+  if (isGuest.value) {
+    return rPassword.value.length >= 6 && rPassword.value === rConfirm.value && !regLoading.value
+  }
+  return (
+    rId.value &&
+    rName.value &&
+    rPassword.value.length >= 6 &&
+    rPassword.value === rConfirm.value &&
+    !regLoading.value
+  )
+})
 
 function routeByRole(role) {
   if (role === 'ADMIN') router.push(route.query.next || '/admin')
@@ -42,18 +64,38 @@ function routeByRole(role) {
 }
 
 onMounted(() => { if (auth.isAuthed) routeByRole(auth.role) })
-watch([username, password, rUsername, rPassword, rConfirm, tab], () => auth.error && (auth.error = null))
+watch([id, password, rId, rName, guestFrom, guestName, rPassword, rConfirm, isGuest, tab], () => {
+  if (auth.error) auth.error = null
+})
 
 async function submitLogin() {
   if (!canLogin.value) return
-  const ok = await auth.login(username.value.trim(), password.value)
+  const ok = await auth.login(id.value.trim(), password.value)
   if (ok) routeByRole(auth.role)
 }
 
 async function submitRegister() {
   if (!canRegister.value) return
-  const ok = await auth.register(rUsername.value.trim(), rPassword.value)
-  if (ok) routeByRole(auth.role)
+  let ok = false
+  if (isGuest.value) {
+    ok = await auth.registerGuest({
+      password: rPassword.value,
+      displayName: guestName.value.trim(),
+      fromCompany: guestFrom.value.trim(),
+    })
+    if (ok) {
+      generatedId.value = auth.user?.id || ''
+      showIdDialog.value = true
+      return
+    }
+  } else {
+    ok = await auth.registerCustomer({
+      id: rId.value.trim(),
+      username: rName.value.trim(),
+      password: rPassword.value,
+    })
+    if (ok) routeByRole(auth.role)
+  }
 }
 </script>
 
@@ -81,9 +123,10 @@ async function submitRegister() {
           </v-tabs>
 
           <v-window v-model="tab">
+            <!-- LOGIN -->
             <v-window-item value="login">
-              <v-text-field v-model.trim="username" label="Username" variant="outlined" density="comfortable"
-                            autocomplete="username" prepend-inner-icon="mdi-account-outline"
+              <v-text-field v-model.trim="id" label="ID" variant="outlined" density="comfortable"
+                            autocomplete="username" prepend-inner-icon="mdi-card-account-details-outline"
                             :rules="[rules.required]" @keyup.enter="submitLogin" class="mb-3"/>
               <v-text-field v-model="password" :type="showPw ? 'text':'password'" label="Password"
                             variant="outlined" density="comfortable" autocomplete="current-password"
@@ -97,24 +140,58 @@ async function submitRegister() {
                      :disabled="!canLogin" @click="submitLogin">Sign in</v-btn>
             </v-window-item>
 
+            <!-- REGISTER -->
             <v-window-item value="register">
-              <div class="text-body-2 text-medium-emphasis mb-4">You’ll be registered as a Customer</div>
-              <v-text-field v-model.trim="rUsername" label="Username" variant="outlined" density="comfortable"
-                            autocomplete="username" prepend-inner-icon="mdi-account-outline"
-                            :rules="[rules.required]" class="mb-3" @keyup.enter="submitRegister" />
+              <div class="d-flex align-center justify-space-between mb-3">
+                <div class="text-body-2 text-medium-emphasis">Register as Guest</div>
+                <v-switch v-model="isGuest" inset density="compact" color="primary" class="ma-0" />
+              </div>
+
+              <div v-if="isGuest" class="text-body-2 text-medium-emphasis mb-2">
+                You’ll be registered as a Guest (ID will start with <b>99</b>).
+              </div>
+              <div v-else class="text-body-2 text-medium-emphasis mb-2">
+                Register an Employee (set <b>ID</b> and display <b>Name</b>).
+              </div>
+
+              <!-- Guest-only fields -->
+              <v-expand-transition>
+                <div v-show="isGuest">
+                  <v-text-field v-model.trim="guestFrom" label="Where are you from (other company)"
+                                variant="outlined" density="comfortable"
+                                prepend-inner-icon="mdi-office-building-marker-outline" class="mb-3" />
+                  <v-text-field v-model.trim="guestName" label="Display name (optional)"
+                                variant="outlined" density="comfortable"
+                                prepend-inner-icon="mdi-account-outline" class="mb-3" />
+                </div>
+              </v-expand-transition>
+
+              <!-- Employee-only fields -->
+              <v-expand-transition>
+                <div v-show="!isGuest">
+                  <v-text-field v-model.trim="rId" label="Employee ID" variant="outlined" density="comfortable"
+                                prepend-inner-icon="mdi-card-account-details-outline"
+                                :rules="[rules.required]" class="mb-3" />
+                  <v-text-field v-model.trim="rName" label="Display Name" variant="outlined" density="comfortable"
+                                prepend-inner-icon="mdi-account-outline"
+                                :rules="[rules.required]" class="mb-3" />
+                </div>
+              </v-expand-transition>
+
+              <!-- Password + Confirm (common) -->
               <v-text-field v-model="rPassword" :type="rShowPw ? 'text':'password'" label="Password"
                             variant="outlined" density="comfortable" autocomplete="new-password"
                             prepend-inner-icon="mdi-lock-outline"
                             :append-inner-icon="rShowPw ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
                             @click:append-inner="rShowPw = !rShowPw"
-                            :rules="[rules.required, rules.min6]" class="mb-3" @keyup.enter="submitRegister" />
+                            :rules="[rules.required, rules.min6]" class="mb-3" />
               <v-text-field v-model="rConfirm" :type="rShowPw2 ? 'text':'password'" label="Confirm password"
                             variant="outlined" density="comfortable" autocomplete="new-password"
                             prepend-inner-icon="mdi-lock-check-outline"
                             :append-inner-icon="rShowPw2 ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
                             @click:append-inner="rShowPw2 = !rShowPw2"
-                            :rules="[v => !!v || 'Required', v => v === rPassword || 'Passwords do not match']"
-                            class="mb-4" @keyup.enter="submitRegister" />
+                            :rules="[rules.required, rules.match]" class="mb-4" />
+
               <v-alert v-if="auth.error && tab==='register'" type="error" variant="tonal" class="mb-4">
                 {{ auth.error }}
               </v-alert>
@@ -127,6 +204,23 @@ async function submitRegister() {
         </v-card>
       </v-col>
     </v-row>
+
+    <!-- Dialog: show generated ID for guests -->
+    <v-dialog v-model="showIdDialog" max-width="480">
+      <v-card class="pa-4">
+        <div class="text-h6 mb-2">Guest account created</div>
+        <div class="mb-4">
+          <div class="text-body-2 text-medium-emphasis">Your login ID, Please Keep it to login later!</div>
+          <v-alert type="info" variant="tonal" class="mt-2">
+            <div class="d-flex align-center justify-space-between">
+              <strong style="font-size:1.1rem">{{ generatedId }}</strong>
+              <v-btn size="small" variant="text" @click="navigator.clipboard.writeText(generatedId)">Copy</v-btn>
+            </div>
+          </v-alert>
+        </div>
+        <v-btn block color="primary" @click="routeByRole(auth.role)">Continue</v-btn>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 

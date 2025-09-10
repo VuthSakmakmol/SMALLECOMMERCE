@@ -1,10 +1,73 @@
 const bcrypt = require('bcryptjs')
 const User = require('../models/User')
+const { GUEST_PREFIX } = require('../utils/guest')
 
 const ALL_ROLES = ['ADMIN', 'CHEF', 'CUSTOMER']
 
 const countActiveAdmins = async () =>
   User.countDocuments({ role: 'ADMIN', isActive: true })
+
+
+// ⬇ add at the bottom and export it
+const bulkImport = async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body) ? req.body : req.body.items
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'No items to import' })
+    }
+
+    const results = []
+    for (let i = 0; i < items.length; i++) {
+      const raw = items[i] || {}
+      const loginId = String(raw.id ?? raw.loginId ?? '').trim()
+      const name = String(raw.username ?? raw.name ?? '').trim()
+      const role = (raw.role || 'CUSTOMER').toUpperCase()
+      const password = raw.password
+
+      // validations
+      if (!loginId) { results.push({ index: i, id: null, status: 'error', message: 'Missing id/loginId' }); continue }
+      if (!name)    { results.push({ index: i, id: loginId, status: 'error', message: 'Missing username/name' }); continue }
+      if (!password || String(password).length < 6) {
+        results.push({ index: i, id: loginId, status: 'error', message: 'Password min 6 chars' }); continue
+      }
+      if (!ALL_ROLES.includes(role)) {
+        results.push({ index: i, id: loginId, status: 'error', message: 'Invalid role' }); continue
+      }
+      if (String(loginId).startsWith(GUEST_PREFIX)) {
+        results.push({ index: i, id: loginId, status: 'error', message: 'IDs starting with 99 are reserved for guests' }); continue
+      }
+
+      const exists = await User.findOne({ loginId })
+      if (exists) {
+        results.push({ index: i, id: loginId, status: 'skipped', message: 'ID already exists' })
+        continue
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10)
+      await User.create({
+        loginId,
+        name,
+        passwordHash,
+        role,
+        isGuest: false,
+        isActive: true,
+        kitchenId: null
+      })
+      results.push({ index: i, id: loginId, status: 'created' })
+    }
+
+    const summary = {
+      total: results.length,
+      created: results.filter(r => r.status === 'created').length,
+      skipped: results.filter(r => r.status === 'skipped').length,
+      errors: results.filter(r => r.status === 'error').length,
+    }
+    res.status(207).json({ summary, results }) // 207 Multi-Status
+  } catch (e) { next(e) }
+}
+
+
+
 
 // GET /api/users?role=ADMIN|CHEF|CUSTOMER&q=abc&page=1&limit=10
 const list = async (req, res, next) => {
@@ -12,7 +75,7 @@ const list = async (req, res, next) => {
     const { role, q, page = 1, limit = 10 } = req.query
     const filter = {}
     if (role && ALL_ROLES.includes(role)) filter.role = role
-    if (q) filter.$or = [{ name: new RegExp(q, 'i') }, { email: new RegExp(q, 'i') }]
+    if (q) filter.$or = [{ name: new RegExp(q, 'i') }, { loginId: new RegExp(q, 'i') }]
 
     const skip = (Number(page) - 1) * Number(limit)
     const [rows, total] = await Promise.all([
@@ -37,17 +100,37 @@ const getOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// POST /api/users   { name, email, password, role, kitchenId? }
+// POST /api/users   { loginId, name, password, role, isGuest?, kitchenId? }
 const create = async (req, res, next) => {
   try {
-    const { name, email, password, role, kitchenId = null } = req.body
+    const { loginId, name, password, role, isGuest = false, kitchenId = null } = req.body
+    if (!loginId) return res.status(400).json({ message: 'ID (loginId) required' })
+    if (!name) return res.status(400).json({ message: 'Username required' })
+    if (!password || String(password).length < 6)
+      return res.status(400).json({ message: 'Password min 6 chars' })
     if (!ALL_ROLES.includes(role)) return res.status(400).json({ message: 'Invalid role' })
 
-    const exists = await User.findOne({ email })
-    if (exists) return res.status(409).json({ message: 'Email already in use' })
+    // Invariants
+    if (String(loginId).startsWith(GUEST_PREFIX) && !isGuest)
+      return res.status(400).json({ message: 'IDs starting with 99 must be guests' })
+    if (isGuest && !String(loginId).startsWith(GUEST_PREFIX))
+      return res.status(400).json({ message: 'Guest ID must start with 99' })
+    if (isGuest && role !== 'CUSTOMER')
+      return res.status(400).json({ message: 'Guests must have CUSTOMER role' })
+
+    const exists = await User.findOne({ loginId })
+    if (exists) return res.status(409).json({ message: 'ID already in use' })
 
     const passwordHash = await bcrypt.hash(password, 10)
-    const user = await User.create({ name, email, passwordHash, role, kitchenId, isActive: true })
+    const user = await User.create({
+      loginId,
+      name: isGuest ? 'GUEST' : name,
+      passwordHash,
+      role,
+      isGuest: !!isGuest,
+      kitchenId,
+      isActive: true
+    })
 
     const lean = user.toObject()
     delete lean.passwordHash
@@ -55,24 +138,24 @@ const create = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// PUT /api/users/:id   { name?, email?, role?, kitchenId?, isActive? }
+// PUT /api/users/:id   { loginId?, name?, role?, kitchenId?, isActive?, isGuest? }
 const update = async (req, res, next) => {
   try {
     const { id } = req.params
-    const payload = {}
-    ;['name', 'email', 'role', 'kitchenId', 'isActive', 'telegramChatId'].forEach(k => {
-      if (req.body[k] !== undefined) payload[k] = req.body[k]
-    })
-
     const current = await User.findById(id)
     if (!current) return res.status(404).json({ message: 'User not found' })
 
-    // prevent self role changes that could lock you out
+    const payload = {}
+    ;['loginId','name','role','kitchenId','isActive','telegramChatId','isGuest'].forEach(k => {
+      if (req.body[k] !== undefined) payload[k] = req.body[k]
+    })
+
+    // prevent self role change
     if (String(req.user._id) === String(id) && payload.role && payload.role !== current.role) {
       return res.status(400).json({ message: 'You cannot change your own role' })
     }
 
-    // if demoting an ADMIN or changing isActive on ADMIN, protect last admin
+    // protect last admin
     if (current.role === 'ADMIN') {
       if (payload.role && payload.role !== 'ADMIN') {
         const adminCount = await countActiveAdmins()
@@ -87,9 +170,42 @@ const update = async (req, res, next) => {
       }
     }
 
+    // guest invariants
+    const nextIsGuest = payload.isGuest !== undefined ? !!payload.isGuest : !!current.isGuest
+    const nextLoginId = payload.loginId || current.loginId
+    const nextRole = payload.role || current.role
+    if (nextIsGuest && !String(nextLoginId).startsWith(GUEST_PREFIX))
+      return res.status(400).json({ message: 'Guest ID must start with 99' })
+    if (String(nextLoginId).startsWith(GUEST_PREFIX) && !nextIsGuest)
+      return res.status(400).json({ message: 'IDs starting with 99 must be guests' })
+    if (nextIsGuest && nextRole !== 'CUSTOMER')
+      return res.status(400).json({ message: 'Guests must have CUSTOMER role' })
+    if (nextIsGuest && (payload.name && payload.name !== 'GUEST'))
+      payload.name = 'GUEST'
+
+    // enforce loginId uniqueness if changed
+    if (payload.loginId && payload.loginId !== current.loginId) {
+      const dupe = await User.findOne({ loginId: payload.loginId })
+      if (dupe) return res.status(409).json({ message: 'ID already in use' })
+    }
+
     const updated = await User.findByIdAndUpdate(id, payload, { new: true, runValidators: true })
       .select('-passwordHash')
     res.json(updated)
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/users/:id/password   { password }
+const resetPassword = async (req, res, next) => {
+  try {
+    const { id } = req.params
+    const { password } = req.body
+    const user = await User.findById(id)
+    if (!user) return res.status(404).json({ message: 'User not found' })
+
+    user.passwordHash = await bcrypt.hash(password, 10)
+    await user.save()
+    res.json({ ok: true })
   } catch (e) { next(e) }
 }
 
@@ -117,21 +233,6 @@ const toggle = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// PATCH /api/users/:id/password   { password }
-const resetPassword = async (req, res, next) => {
-  try {
-    const { id } = req.params
-    const { password } = req.body
-    const user = await User.findById(id)
-    if (!user) return res.status(404).json({ message: 'User not found' })
-
-    // allow resetting your own password OR any user as admin
-    user.passwordHash = await bcrypt.hash(password, 10)
-    await user.save()
-    res.json({ ok: true })
-  } catch (e) { next(e) }
-}
-
 // DELETE /api/users/:id
 const removeOne = async (req, res, next) => {
   try {
@@ -152,4 +253,4 @@ const removeOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { list, getOne, create, update, toggle, resetPassword, removeOne }
+module.exports = { list, getOne, create, update, toggle, resetPassword, removeOne, bulkImport }

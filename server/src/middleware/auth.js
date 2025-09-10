@@ -11,7 +11,14 @@ const authenticate = async (req, res, next) => {
     const user = await User.findById(payload.sub).lean()
     if (!user || !user.isActive) return res.status(401).json({ message: 'User not found or inactive' })
 
-    req.user = { _id: String(user._id), name: user.name, role: user.role, kitchenId: user.kitchenId || null }
+    req.user = {
+      _id: String(user._id),
+      id: user.loginId,
+      name: user.name,
+      role: user.role,
+      isGuest: !!user.isGuest,
+      kitchenId: user.kitchenId || null
+    }
     next()
   } catch {
     return res.status(401).json({ message: 'Invalid or expired token' })
