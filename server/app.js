@@ -86,6 +86,10 @@ app.use('/api/foods', require('./src/routes/foods.routes'));
 app.use('/api/users', require('./src/routes/users.routes'));
 app.use('/api/packages', require('./src/routes/packages.routes'));
 app.use('/api/reports', require('./src/routes/reports.routes'));
+app.use('/api/ingredients', require('./src/routes/ingredients.routes'))
+app.use('/api/choice-groups', require('./src/routes/choice-groups.routes'))
+app.use('/api/cart', require('./src/routes/cart.routes'))
+
 
 /* ───────────────────────── Error logger (AFTER routes) ───────────────────────── */
 app.use((err, req, res, next) => {

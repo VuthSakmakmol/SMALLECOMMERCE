@@ -1,25 +1,26 @@
 const Category = require('../models/Category')
-const Food = require('../models/Food') // ensure your Food model has categoryId
-const { toSlug } = require('../models/Category')
+const Food = require('../models/Food')
 
-// GET /categories?activeOnly=true&q=khmer&page=1&limit=50
+// local slugify for updates via findByIdAndUpdate
+const toSlug = (s) =>
+  String(s || '').toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
+
+/** GET /categories?activeOnly=true&q=khmer */
 const list = async (req, res, next) => {
   try {
-    const { activeOnly, q, page = 1, limit = 100 } = req.query
+    const { activeOnly, q } = req.query
     const filter = {}
     if (String(activeOnly) === 'true') filter.isActive = true
-    if (q) filter.$or = [{ name: new RegExp(q, 'i') }, { slug: new RegExp(q, 'i') }]
-
-    const skip = (Number(page) - 1) * Number(limit)
-    const [rows, total] = await Promise.all([
-      Category.find(filter).sort({ name: 1 }).skip(skip).limit(Number(limit)).lean(),
-      Category.countDocuments(filter)
-    ])
-    res.json({ data: rows, total, page: Number(page), limit: Number(limit) })
+    if (q) {
+      const rx = new RegExp(q, 'i')
+      filter.$or = [{ name: rx }, { slug: rx }]
+    }
+    const rows = await Category.find(filter).sort({ name: 1 }).lean()
+    res.json(rows)
   } catch (e) { next(e) }
 }
 
-// GET /categories/:id
+/** GET /categories/:id */
 const getOne = async (req, res, next) => {
   try {
     const row = await Category.findById(req.params.id).lean()
@@ -28,57 +29,44 @@ const getOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// GET /categories/slug/:slug
-const getBySlug = async (req, res, next) => {
+/** POST /categories   body: { name, imageUrl? } */
+const create = async (req, res, next) => {
   try {
-    const row = await Category.findOne({ slug: req.params.slug }).lean()
+    const { name, imageUrl = '' } = req.body
+
+    const exists = await Category.findOne({ name: new RegExp(`^${name}$`, 'i') })
+    if (exists) return res.status(409).json({ message: 'Category already exists' })
+
+    const row = await Category.create({ name, imageUrl })
+    res.status(201).json(row)
+  } catch (e) { next(e) }
+}
+
+/** PUT /categories/:id   body: { name?, imageUrl?, isActive? } */
+const update = async (req, res, next) => {
+  try {
+    const { id } = req.params
+    const payload = {}
+    ;['name', 'imageUrl', 'isActive'].forEach(k => {
+      if (req.body[k] !== undefined) payload[k] = req.body[k]
+    })
+    if (payload.name) payload.slug = toSlug(payload.name)
+
+    if (payload.name) {
+      const dup = await Category.findOne({
+        _id: { $ne: id },
+        name: new RegExp(`^${payload.name}$`, 'i')
+      }).lean()
+      if (dup) return res.status(409).json({ message: 'Category name already in use' })
+    }
+
+    const row = await Category.findByIdAndUpdate(id, payload, { new: true, runValidators: true })
     if (!row) return res.status(404).json({ message: 'Category not found' })
     res.json(row)
   } catch (e) { next(e) }
 }
 
-// POST /categories   { name }
-const create = async (req, res, next) => {
-  try {
-    const name = String(req.body.name ?? '').trim()
-    if (!name) return res.status(400).json({ message: 'Name required' })
-    const row = await Category.create({ name })
-    res.status(201).json(row)
-  } catch (e) {
-    // handle duplicate key (slug or nameNorm)
-    if (e?.code === 11000) {
-      return res.status(409).json({ message: 'Category already exists' })
-    }
-    next(e)
-  }
-}
-
-// PUT /categories/:id   { name?, isActive? }
-const update = async (req, res, next) => {
-  try {
-    const { id } = req.params
-    const payload = {}
-    if (req.body.name !== undefined) {
-      const name = String(req.body.name).trim()
-      if (!name) return res.status(400).json({ message: 'Name cannot be empty' })
-      payload.name = name
-      payload.slug = toSlug(name)
-      payload.nameNorm = name.toLowerCase().trim().replace(/\s+/g, ' ')
-    }
-    if (req.body.isActive !== undefined) payload.isActive = !!req.body.isActive
-
-    const row = await Category.findByIdAndUpdate(id, payload, { new: true, runValidators: true })
-    if (!row) return res.status(404).json({ message: 'Category not found' })
-    res.json(row)
-  } catch (e) {
-    if (e?.code === 11000) {
-      return res.status(409).json({ message: 'Category name already in use' })
-    }
-    next(e)
-  }
-}
-
-// PATCH /categories/:id/toggle   { value: boolean }
+/** PATCH /categories/:id/toggle   body: { value: boolean } */
 const toggle = async (req, res, next) => {
   try {
     const { id } = req.params
@@ -89,7 +77,7 @@ const toggle = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// DELETE /categories/:id   (block if foods exist)
+/** DELETE /categories/:id   blocks if foods exist under the category */
 const removeOne = async (req, res, next) => {
   try {
     const { id } = req.params
@@ -103,4 +91,4 @@ const removeOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { list, getOne, getBySlug, create, update, toggle, removeOne }
+module.exports = { list, getOne, create, update, toggle, removeOne }

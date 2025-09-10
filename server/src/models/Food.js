@@ -1,39 +1,39 @@
 const mongoose = require('mongoose')
-const { Schema, model } = mongoose
 
-const foodSchema = new Schema(
-  {
-    name: { type: String, required: true, trim: true },
-    nameNorm: { type: String, required: true, select: false }, // unique per category (case-insensitive)
-    categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
+const FoodIngredientSchema = new mongoose.Schema({
+  ingredientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Ingredient', required: true },
+  defaultIncluded: { type: Boolean, default: true },
+  removable: { type: Boolean, default: true },
+  // BOOLEAN: boolean|null, PERCENT: number, CHOICE: string
+  defaultValue: { type: mongoose.Schema.Types.Mixed, default: null }
+}, { _id: false })
 
-    imageUrl: { type: String, default: '' },
-    description: { type: String, default: '' },
-    tags: { type: [String], default: [] },
+const FoodChoiceGroupSchema = new mongoose.Schema({
+  groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'ChoiceGroup', required: true },
+  defaultChoice: { type: String, default: null }
+}, { _id: false })
 
-    // visibility
-    isActiveGlobal:  { type: Boolean, default: true },
-    isActiveKitchen: { type: Boolean, default: true },
+const foodSchema = new mongoose.Schema({
+  name:        { type: String, required: true, trim: true },
+  categoryId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
 
-    // current stock (no daily reset). null = unlimited (won’t decrement)
-    stockQty: { type: Number, default: null, min: 0 },
+  imageUrl:    { type: String, default: '' },
+  description: { type: String, default: '' },
+  tags:        { type: [String], default: [] },
 
-    createdBy: { type: String, default: null },
-    updatedBy: { type: String, default: null },
-  },
-  { timestamps: true, versionKey: false }
-)
+  // availability
+  isActiveGlobal:  { type: Boolean, default: true },
+  isActiveKitchen: { type: Boolean, default: true },
 
-// unique per category, case-insensitive
-foodSchema.index({ categoryId: 1, nameNorm: 1 }, { unique: true })
+  // null = unlimited
+  stockQty:    { type: Number, default: null, min: 0 },
 
-function normName(s){ return String(s||'').toLowerCase().trim().replace(/\s+/g,' ') }
-function normTags(arr){ const a = Array.isArray(arr) ? arr : []; return Array.from(new Set(a.map(t=>String(t||'').toLowerCase().trim()).filter(Boolean))) }
+  // attachments
+  ingredients:   { type: [FoodIngredientSchema], default: [] },
+  choiceGroups:  { type: [FoodChoiceGroupSchema], default: [] },
 
-foodSchema.pre('validate', function(next){
-  if (this.isModified('name')) this.nameNorm = normName(this.name)
-  if (this.isModified('tags')) this.tags = normTags(this.tags)
-  next()
-})
+  createdBy:  { type: String, default: null },
+  updatedBy:  { type: String, default: null },
+}, { timestamps: true })
 
-module.exports = model('Food', foodSchema)
+module.exports = mongoose.model('Food', foodSchema)

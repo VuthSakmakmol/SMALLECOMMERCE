@@ -4,60 +4,62 @@ const { authenticate, authorize } = require('../middleware/auth')
 const { validate } = require('../middleware/validate')
 const ctrl = require('../controllers/foods.controller')
 
-// Public
 router.get('/',
   [
     query('activeOnly').optional().isIn(['true','false']),
-    query('inStockOnly').optional().isIn(['true','false']),
-    query('categoryId').optional().isMongoId(),
-    query('q').optional().isString().trim()
+    query('q').optional().isString().trim(),
+    query('categoryId').optional().isMongoId()
   ],
-  validate, ctrl.list
-)
+  validate, ctrl.list)
+
 router.get('/:id', [ param('id').isMongoId() ], validate, ctrl.getOne)
 
-// Admin/Chef
 router.post('/',
   authenticate, authorize('ADMIN','CHEF'),
   [
-    body('name').isString().trim().notEmpty(),
+    body('name').isString().notEmpty(),
     body('categoryId').isMongoId(),
     body('imageUrl').optional().isString(),
     body('description').optional().isString(),
     body('tags').optional().isArray(),
-    body('tags.*').optional().isString(),
-    body('stockQty').optional().custom(v => v === null || (Number.isInteger(v) && v >= 0))
+    body('stockQty').optional({ values: 'null' }).custom(v => v === null || Number.isFinite(Number(v))),
+    body('ingredients').optional().isArray(),
+    body('choiceGroups').optional().isArray()
   ],
-  validate, ctrl.create
-)
+  validate, ctrl.create)
 
 router.put('/:id',
   authenticate, authorize('ADMIN','CHEF'),
   [
     param('id').isMongoId(),
-    body('name').optional().isString().trim().notEmpty(),
+    body('name').optional().isString().notEmpty(),
     body('categoryId').optional().isMongoId(),
     body('imageUrl').optional().isString(),
     body('description').optional().isString(),
     body('tags').optional().isArray(),
-    body('tags.*').optional().isString(),
-    body('isActiveGlobal').optional().isBoolean(),
-    body('isActiveKitchen').optional().isBoolean(),
-    body('stockQty').optional().custom(v => v === null || (Number.isInteger(v) && v >= 0))
+    body('stockQty').optional({ values: 'null' }).custom(v => v === null || Number.isFinite(Number(v))),
+    body('ingredients').optional().isArray(),
+    body('choiceGroups').optional().isArray()
   ],
-  validate, ctrl.update
-)
+  validate, ctrl.update)
+
+router.patch('/:id/toggle',
+  authenticate, authorize('ADMIN','CHEF'),
+  [
+    param('id').isMongoId(),
+    body('scope').isIn(['GLOBAL','KITCHEN']),
+    body('value').isBoolean()
+  ],
+  validate, ctrl.toggle)
 
 router.patch('/:id/stock',
   authenticate, authorize('ADMIN','CHEF'),
-  [ param('id').isMongoId(), body('stockQty').custom(v => v === null || (Number.isInteger(v) && v >= 0)) ],
-  validate, ctrl.setStock
-)
+  [ param('id').isMongoId(), body('stockQty').optional({ values: 'null' }) ],
+  validate, ctrl.setStock)
 
 router.delete('/:id',
   authenticate, authorize('ADMIN','CHEF'),
   [ param('id').isMongoId() ],
-  validate, ctrl.removeOne
-)
+  validate, ctrl.remove)
 
 module.exports = router
