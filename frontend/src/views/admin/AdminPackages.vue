@@ -1,3 +1,4 @@
+<!-- src/views/admin/AdminPackage.vue -->
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import api from '@/utils/api'
@@ -16,12 +17,17 @@ const PACKAGE_TYPES = ['Individual','Group','Workshop']
 const form = ref({ name:'', imageUrl:'', description:'', items:[] })
 
 const headers = [
-  { title: 'Image',   key: 'image' },
+  { title: 'Image',   key: 'image',  sortable: false },
   { title: 'Package', key: 'name' },
-  { title: 'Items',   key: 'items' },
-  { title: 'Active',  key: 'active', align: 'center' },
-  { title: 'Actions', key: 'actions', align: 'end' }
+  { title: 'Items',   key: 'items',  sortable: false },
+  { title: 'Active',  key: 'active', align: 'center', sortable: false },
+  { title: 'Actions', key: 'actions', align: 'end', sortable: false }
 ]
+
+const snackbar = ref(false)
+const snackText = ref('')
+const snackColor = ref('success')
+const notify = (msg, color='success') => { snackText.value = msg; snackColor.value = color; snackbar.value = true }
 
 const foodOptions = computed(() =>
   foods.value.map(f => ({ title: f.name, value: f._id }))
@@ -63,41 +69,57 @@ async function save () {
   const ok = await formRef.value?.validate()
   if (!ok?.valid || form.value.items.length === 0) return
 
-  // Enforce only the 3 types and also avoid duplicates client-side
+  // enforce only 3 types + avoid duplicates client-side
   if (!PACKAGE_TYPES.includes(form.value.name)) {
-    alert('Package must be one of: Individual, Group, Workshop')
+    notify('Package must be one of: Individual, Group, Workshop', 'error')
     return
   }
   const exists = rows.value.find(r => r.name === form.value.name)
   if (!editing.value && exists) {
-    alert(`${form.value.name} package already exists`)
+    notify(`${form.value.name} package already exists`, 'error')
     return
   }
 
-  if (editing.value) {
-    const { data } = await api.put(`/packages/${editing.value._id}`, form.value)
-    upsertRow(data)
-  } else {
-    const { data } = await api.post('/packages', form.value)
-    rows.value.unshift(data)
+  try {
+    if (editing.value) {
+      const { data } = await api.put(`/packages/${editing.value._id}`, form.value)
+      upsertRow(data)
+      notify('Package updated')
+    } else {
+      const { data } = await api.post('/packages', form.value)
+      rows.value.unshift(data)
+      notify('Package created')
+    }
+    dialog.value = false
+  } catch (e) {
+    notify(e?.response?.data?.message || 'Save failed', 'error')
   }
-  dialog.value = false
 }
 
 async function toggleActive (r, value) {
-  const { data } = await api.patch(`/packages/${r._id}/toggle`, { value })
-  upsertRow(data)
+  try {
+    const { data } = await api.patch(`/packages/${r._id}/toggle`, { value })
+    upsertRow(data)
+    notify(value ? 'Activated' : 'Deactivated')
+  } catch (e) {
+    notify(e?.response?.data?.message || 'Toggle failed', 'error')
+  }
 }
 
 async function removeOne (r) {
   if (!confirm(`Delete package "${r.name}"?`)) return
-  await api.delete(`/packages/${r._id}`)
-  rows.value = rows.value.filter(x => x._id !== r._id)
+  try {
+    await api.delete(`/packages/${r._id}`)
+    rows.value = rows.value.filter(x => x._id !== r._id)
+    notify('Package deleted')
+  } catch (e) {
+    notify(e?.response?.data?.message || 'Delete failed', 'error')
+  }
 }
 
 async function loadFoods () {
   const { data } = await api.get('/foods?activeOnly=true')
-  foods.value = data
+  foods.value = Array.isArray(data) ? data : (data?.data || [])
 }
 async function load () {
   loading.value = true
@@ -105,7 +127,7 @@ async function load () {
     const params = new URLSearchParams()
     if (q.value.trim()) params.set('q', q.value.trim())
     const { data } = await api.get(`/packages?${params.toString()}`)
-    rows.value = data
+    rows.value = Array.isArray(data) ? data : (data?.data || [])
   } finally {
     loading.value = false
   }
@@ -130,7 +152,7 @@ onMounted(async () => {
   <v-card class="rounded-2xl">
     <!-- Toolbar -->
     <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
-      <v-toolbar-title>Packages (Free)</v-toolbar-title>
+      <v-toolbar-title>Packages</v-toolbar-title>
       <template #append>
         <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
@@ -185,7 +207,13 @@ onMounted(async () => {
         </template>
 
         <template #item.active="{ item }">
-          <v-switch inset :model-value="item.isActive" hide-details @change="toggleActive(item, $event)" />
+          <div class="d-flex justify-center">
+            <v-switch
+              inset hide-details
+              :model-value="item.isActive"
+              @update:modelValue="val => toggleActive(item, val)"
+            />
+          </div>
         </template>
 
         <template #item.actions="{ item }">
@@ -197,6 +225,10 @@ onMounted(async () => {
               <v-icon start>mdi-delete</v-icon> Delete
             </v-btn>
           </div>
+        </template>
+
+        <template #no-data>
+          <div class="text-medium-emphasis pa-6">No packages found.</div>
         </template>
       </v-data-table>
     </div>
@@ -211,7 +243,7 @@ onMounted(async () => {
               <v-col cols="12" md="6">
                 <v-select
                   v-model="form.name"
-                  :items="['Individual','Group','Workshop']"
+                  :items="PACKAGE_TYPES"
                   label="Package Type"
                   :rules="[rules.required]"
                   clearable
@@ -276,5 +308,9 @@ onMounted(async () => {
 
     <!-- FAB -->
     <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
+
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="2200">
+      {{ snackText }}
+    </v-snackbar>
   </v-card>
 </template>

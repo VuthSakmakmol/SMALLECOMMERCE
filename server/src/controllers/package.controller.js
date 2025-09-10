@@ -1,20 +1,15 @@
-// server/src/controllers/package.controller.js
-const dayjs = require('dayjs')
 const Package = require('../models/Package')
 const Food = require('../models/Food')
 
 const ALLOWED_NAMES = ['Individual', 'Group', 'Workshop']
 
-// GET /api/packages?activeOnly=true&q=...
-// When activeOnly=true: also hide zero-stock packages (if dailyLimit is used)
+// GET /api/packages?activeOnly=true&inStockOnly=true&q=...
 const list = async (req, res, next) => {
   try {
-    const { activeOnly, q } = req.query
+    const { activeOnly, inStockOnly, q } = req.query
     const filter = {}
-    if (String(activeOnly) === 'true') {
-      filter.isActive = true
-      filter.$or = [{ dailyLimit: null }, { stockRemaining: { $gt: 0 } }]
-    }
+    if (String(activeOnly) === 'true') filter.isActive = true
+    if (String(inStockOnly) === 'true') filter.availableQty = { $gt: 0 }
     if (q) filter.name = { $regex: q, $options: 'i' }
 
     const rows = await Package.find(filter).sort({ name: 1 }).lean()
@@ -22,6 +17,7 @@ const list = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// GET /api/packages/:id
 const getOne = async (req, res, next) => {
   try {
     const row = await Package.findById(req.params.id).lean()
@@ -30,10 +26,10 @@ const getOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// POST /api/packages  { name, items:[{foodId,qty}], description?, imageUrl? }
+// POST /api/packages  { name, items:[{foodId,qty}], description?, imageUrl?, availableQty? }
 const create = async (req, res, next) => {
   try {
-    const { name, imageUrl = '', description = '', items = [] } = req.body
+    const { name, imageUrl = '', description = '', items = [], availableQty = null } = req.body
 
     if (!ALLOWED_NAMES.includes(name)) {
       return res.status(400).json({ message: 'Package name must be Individual, Group, or Workshop' })
@@ -53,16 +49,17 @@ const create = async (req, res, next) => {
       return res.status(400).json({ message: 'Some foods not found for this package' })
     }
 
-    const row = await Package.create({ name, items, description, imageUrl })
+    const row = await Package.create({ name, items, description, imageUrl, availableQty })
     res.status(201).json(row)
   } catch (e) { next(e) }
 }
 
+// PUT /api/packages/:id
 const update = async (req, res, next) => {
   try {
     const { id } = req.params
     const payload = {}
-    ;['name','imageUrl','description','items','isActive','dailyLimit','stockDate','stockRemaining'].forEach(k => {
+    ;['name','imageUrl','description','items','isActive','availableQty'].forEach(k => {
       if (req.body[k] !== undefined) payload[k] = req.body[k]
     })
 
@@ -91,6 +88,7 @@ const update = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/packages/:id/toggle
 const toggle = async (req, res, next) => {
   try {
     const row = await Package.findByIdAndUpdate(
@@ -101,6 +99,7 @@ const toggle = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// DELETE /api/packages/:id
 const removeOne = async (req, res, next) => {
   try {
     const row = await Package.findByIdAndDelete(req.params.id)
@@ -109,36 +108,24 @@ const removeOne = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-/** PATCH /api/packages/:id/stock  (ADMIN | CHEF)
- * body: { dailyLimit: number|null }
- * Set today's package stock (resets remaining). Null = unlimited.
+/** PATCH /api/packages/:id/stock
+ * body: { availableQty: number|null }
+ * Static stock display (null = not tracked / unlimited label).
  */
 const setStock = async (req, res, next) => {
   try {
     const { id } = req.params
-    const { dailyLimit } = req.body
-    const today = dayjs().format('YYYY-MM-DD')
+    const { availableQty } = req.body
 
-    const update = { dailyLimit: dailyLimit === null ? null : Number(dailyLimit) }
-    if (update.dailyLimit === null) {
-      update.stockDate = null
-      update.stockRemaining = null
-    } else {
-      update.stockDate = today
-      update.stockRemaining = update.dailyLimit
+    const update = { availableQty: availableQty === null ? null : Number(availableQty) }
+    if (update.availableQty !== null && (!Number.isInteger(update.availableQty) || update.availableQty < 0)) {
+      return res.status(400).json({ message: 'availableQty must be null or an integer >= 0' })
     }
+
     const row = await Package.findByIdAndUpdate(id, update, { new: true })
     if (!row) return res.status(404).json({ message: 'Package not found' })
     res.json(row)
   } catch (e) { next(e) }
 }
 
-/** OPTIONAL: Ensure the 3 package shells exist */
-const ensureDefaultPackages = async () => {
-  for (const name of ALLOWED_NAMES) {
-    const exists = await Package.findOne({ name }).lean()
-    if (!exists) await Package.create({ name, items: [], isActive: true })
-  }
-}
-
-module.exports = { list, getOne, create, update, toggle, removeOne, setStock, ensureDefaultPackages }
+module.exports = { list, getOne, create, update, toggle, removeOne, setStock }

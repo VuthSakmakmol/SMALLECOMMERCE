@@ -1,44 +1,44 @@
-// server/src/models/Package.js
 const mongoose = require('mongoose')
 
-const packageItemSchema = new mongoose.Schema({
-  foodId: { type: mongoose.Schema.Types.ObjectId, ref: 'Food', required: true },
-  qty: { type: Number, min: 1, required: true }
-}, { _id: false })
+const { Schema, model } = mongoose
+const ALLOWED_NAMES = ['Individual', 'Group', 'Workshop']
 
-const packageSchema = new mongoose.Schema({
-  name: { 
-    type: String, 
-    required: true, 
-    enum: ['Individual', 'Group', 'Workshop'],
-    unique: true,
-    trim: true
+const itemSchema = new Schema(
+  {
+    foodId: { type: Schema.Types.ObjectId, ref: 'Food', required: true },
+    qty: { type: Number, required: true, min: 1 },
   },
-  slug: { type: String, unique: true, index: true },
+  { _id: false }
+)
 
-  description: { type: String, default: '' },
-  imageUrl: { type: String, default: '' },
-
-  items: { type: [packageItemSchema], default: [] },
-  isActive: { type: Boolean, default: true },
-
-  // NEW: daily stock for packages (optional; null = unlimited)
-  dailyLimit:     { type: Number, default: null },
-  stockDate:      { type: String,  default: null },   // 'YYYY-MM-DD'
-  stockRemaining: { type: Number,  default: null },
-}, { timestamps: true })
-
-function toSlug(s) {
-  return String(s || '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
+function noDuplicateFoods(items) {
+  const ids = items.map(i => String(i.foodId))
+  return ids.length === new Set(ids).size
 }
 
-packageSchema.pre('save', function (next) {
-  if (this.isModified('name')) this.slug = toSlug(this.name)
-  next()
-})
+const packageSchema = new Schema(
+  {
+    name: { type: String, enum: ALLOWED_NAMES, required: true, unique: true },
 
-module.exports = mongoose.model('Package', packageSchema)
+    description: { type: String, default: '' },
+    imageUrl: { type: String, default: '' },
+
+    items: {
+      type: [itemSchema],
+      default: [],
+      validate: [
+        { validator: (arr) => Array.isArray(arr) && arr.length > 0, message: 'Package must contain at least one item' },
+        { validator: noDuplicateFoods, message: 'Duplicate foodId in items' }
+      ]
+    },
+
+    isActive: { type: Boolean, default: true },
+
+    // STATIC stock display (no reset, no decrement)
+    availableQty: { type: Number, default: null, min: 0 }, // null = not tracked / unlimited label
+  },
+  { timestamps: true, versionKey: false }
+)
+
+module.exports = model('Package', packageSchema)
+module.exports.ALLOWED_PACKAGE_NAMES = ALLOWED_NAMES

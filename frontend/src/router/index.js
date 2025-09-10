@@ -39,14 +39,14 @@ const router = createRouter({
     {
       path: '/admin',
       component: AdminLayout,
-      meta: { role: 'ADMIN' },
+      meta: { role: 'ADMIN' }, // 👈 protected by guard below
       children: [
-        { path: '',            name: 'admin-dashboard',  component: AdminDashboard },
-        { path: 'categories',  name: 'admin-categories', component: AdminCategories },
-        { path: 'packages',    name: 'admin-packages',   component: AdminPackages},
-        { path: 'foods',       name: 'admin-foods',      component: AdminFoods },
-        { path: 'orders',      name: 'admin-orders',     component: AdminOrders },
-        { path: 'users',       name: 'admin-users',      component: AdminUsers },
+        { path: '',            name: 'admin-dashboard',  component: AdminDashboard,  meta: { title: 'Overview' } },
+        { path: 'categories',  name: 'admin-categories', component: AdminCategories, meta: { title: 'Categories' } },
+        { path: 'packages',    name: 'admin-packages',   component: AdminPackages,   meta: { title: 'Packages' } },
+        { path: 'foods',       name: 'admin-foods',      component: AdminFoods,      meta: { title: 'Foods' } },
+        { path: 'orders',      name: 'admin-orders',     component: AdminOrders,     meta: { title: 'Orders' } },
+        { path: 'users',       name: 'admin-users',      component: AdminUsers,      meta: { title: 'Users' } },
       ]
     },
 

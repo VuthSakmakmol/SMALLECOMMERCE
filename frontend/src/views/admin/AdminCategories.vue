@@ -1,3 +1,4 @@
+<!-- src/views/admin/AdminCategory.vue -->
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import api from '@/utils/api'
@@ -10,6 +11,10 @@ const dialog = ref(false)
 const editing = ref(null)
 const formRef = ref(null)
 const form = ref({ name: '' })
+
+const snackbar = ref(false)
+const snackText = ref('')
+const snackColor = ref('success')
 
 const headers = [
   { title: 'Name',   key: 'name' },
@@ -27,13 +32,25 @@ const filtered = computed(() => {
   )
 })
 
+function notify(msg, color = 'success') {
+  snackText.value = msg
+  snackColor.value = color
+  snackbar.value = true
+}
+
+function apiErr(e, fallback = 'Something went wrong') {
+  return e?.response?.data?.message || fallback
+}
+
 async function load () {
   loading.value = true
   try {
     const params = new URLSearchParams()
     if (q.value) params.set('q', q.value)
     const { data } = await api.get(`/categories?${params.toString()}`)
-    rows.value = data
+    rows.value = Array.isArray(data) ? data : (data?.data || [])
+  } catch (e) {
+    notify(apiErr(e, 'Failed to load categories'), 'error')
   } finally {
     loading.value = false
   }
@@ -56,14 +73,20 @@ async function save () {
   if (!ok?.valid) return
   const payload = { name: form.value.name.trim() }
 
-  if (editing.value) {
-    const { data } = await api.put(`/categories/${editing.value._id}`, payload)
-    patchRow(data)
-  } else {
-    const { data } = await api.post('/categories', payload)
-    rows.value.unshift(data)
+  try {
+    if (editing.value) {
+      const { data } = await api.put(`/categories/${editing.value._id}`, payload)
+      patchRow(data)
+      notify('Category updated')
+    } else {
+      const { data } = await api.post('/categories', payload)
+      rows.value.unshift(data)
+      notify('Category created')
+    }
+    dialog.value = false
+  } catch (e) {
+    notify(apiErr(e, 'Save failed'), 'error')
   }
-  dialog.value = false
 }
 
 function patchRow (row) {
@@ -72,8 +95,13 @@ function patchRow (row) {
 }
 
 async function toggle (r, value) {
-  const { data } = await api.patch(`/categories/${r._id}/toggle`, { value })
-  patchRow(data)
+  try {
+    const { data } = await api.patch(`/categories/${r._id}/toggle`, { value })
+    patchRow(data)
+    notify(value ? 'Activated' : 'Deactivated')
+  } catch (e) {
+    notify(apiErr(e, 'Toggle failed'), 'error')
+  }
 }
 
 async function removeOne (r) {
@@ -81,10 +109,11 @@ async function removeOne (r) {
   try {
     await api.delete(`/categories/${r._id}`)
     rows.value = rows.value.filter(x => x._id !== r._id)
+    notify('Category deleted')
   } catch (e) {
-    const msg = e?.response?.data?.message || 'Cannot delete'
+    const msg = apiErr(e, 'Cannot delete')
     const n = e?.response?.data?.foodCount
-    alert(n != null ? `${msg}. Foods attached: ${n}` : msg)
+    notify(n != null ? `${msg}. Foods attached: ${n}` : msg, 'error')
   }
 }
 
@@ -110,7 +139,15 @@ onMounted(load)
     <div class="pa-4">
       <v-row dense class="mb-3">
         <v-col cols="12" md="6">
-          <v-text-field v-model="q" density="compact" variant="outlined" label="Search category" prepend-inner-icon="mdi-magnify" clearable @keyup.enter="load" />
+          <v-text-field
+            v-model="q"
+            density="compact"
+            variant="outlined"
+            label="Search category"
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            @keyup.enter="load"
+          />
         </v-col>
         <v-col cols="12" md="3">
           <v-btn :loading="loading" @click="load" block>
@@ -119,7 +156,14 @@ onMounted(load)
         </v-col>
       </v-row>
 
-      <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl">
+      <v-data-table
+        :headers="headers"
+        :items="filtered"
+        :items-per-page="10"
+        class="rounded-xl"
+        :loading="loading"
+        loading-text="Loading categories..."
+      >
         <template #item.active="{ item }">
           <div class="d-flex justify-center">
             <v-switch
@@ -130,6 +174,7 @@ onMounted(load)
             />
           </div>
         </template>
+
         <template #item.actions="{ item }">
           <div class="d-flex ga-2 justify-end">
             <v-btn size="small" variant="tonal" color="primary" @click="openEdit(item)">
@@ -139,6 +184,10 @@ onMounted(load)
               <v-icon start>mdi-delete</v-icon> Delete
             </v-btn>
           </div>
+        </template>
+
+        <template #no-data>
+          <div class="text-medium-emphasis pa-6">No categories found.</div>
         </template>
       </v-data-table>
     </div>
@@ -161,7 +210,15 @@ onMounted(load)
       </v-card>
     </v-dialog>
 
-    <!-- Always-visible “Add” button -->
+    <!-- Floating Add button (works across pages) -->
     <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
+
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="2200">
+      {{ snackText }}
+    </v-snackbar>
   </v-card>
 </template>
+
+<style scoped>
+/* if your Vuetify build lacks <v-fab>, swap for a fixed v-btn fab */
+</style>

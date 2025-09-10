@@ -1,5 +1,6 @@
+<!-- src/views/admin/AdminFood.vue -->
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import api from '@/utils/api'
 
 const loading = ref(false)
@@ -8,6 +9,7 @@ const rows = ref([])
 
 const q = ref('')
 const catFilter = ref('ALL')
+const inStockOnly = ref(false)
 
 const dialog = ref(false)
 const editing = ref(null)
@@ -18,49 +20,79 @@ const form = ref({
   categoryId: '',
   imageUrl: '',
   description: '',
-  tags: []
+  tags: [],
+  stockQty: null, // null = unlimited
 })
 
+const snackbar = ref(false)
+const snackText = ref('')
+const snackColor = ref('success')
+
 const headers = [
-  { title: 'Image', key: 'image' },
-  { title: 'Name', key: 'name' },
-  { title: 'Category', key: 'category' },
-  { title: 'Availability', key: 'avail', align: 'center' },
-  { title: 'Daily Stock', key: 'stock', align: 'center' },
-  { title: 'Updated', key: 'updatedAt' },
-  { title: 'Actions', key: 'actions', align: 'end' }
+  { title: 'Image',        key: 'image',     sortable: false },
+  { title: 'Name',         key: 'name' },
+  { title: 'Category',     key: 'category' },
+  { title: 'Availability', key: 'avail',     align: 'center', sortable: false },
+  { title: 'Stock',        key: 'stock',     align: 'center', sortable: false },
+  { title: 'Updated',      key: 'updatedAt' },
+  { title: 'Actions',      key: 'actions',   align: 'end',     sortable: false },
 ]
 
-const rules = { required: v => !!String(v).trim() || 'Required' }
+const rules = {
+  required: v => !!String(v).trim() || 'Required',
+  nonnegIntOrEmpty: v =>
+    (v === null || v === '' || (Number.isInteger(Number(v)) && Number(v) >= 0))
+    || 'Enter integer ≥ 0 or leave blank',
+}
 
 const categoryOptions = computed(() =>
   categories.value.map(c => ({ title: c.name, value: c._id }))
 )
 
+function notify(msg, color='success') {
+  snackText.value = msg
+  snackColor.value = color
+  snackbar.value = true
+}
+
+/* ---------------- load ---------------- */
+
 async function loadCats () {
   const { data } = await api.get('/categories?activeOnly=true')
-  categories.value = data
+  categories.value = Array.isArray(data) ? data : (data?.data || [])
 }
+
 async function load () {
   loading.value = true
   try {
     const params = new URLSearchParams()
+    params.set('activeOnly', 'false') // admins see all
     if (catFilter.value !== 'ALL') params.set('categoryId', catFilter.value)
     if (q.value) params.set('q', q.value)
-    params.set('activeOnly', 'false') // admins see everything
+    if (inStockOnly.value) params.set('inStockOnly', 'true')
     const { data } = await api.get(`/foods?${params.toString()}`)
-    rows.value = data
+    rows.value = Array.isArray(data) ? data : (data?.data || [])
+  } catch (e) {
+    notify(e?.response?.data?.message || 'Failed to load foods', 'error')
   } finally {
     loading.value = false
   }
 }
+
 const filtered = computed(() => rows.value)
+
+watch([q, catFilter, inStockOnly], () => {
+  // keep manual Refresh; call load() here if you prefer auto-refresh
+})
+
+/* ---------------- CRUD ---------------- */
 
 function openCreate () {
   editing.value = null
-  form.value = { name: '', categoryId: '', imageUrl: '', description: '', tags: [] }
+  form.value = { name: '', categoryId: '', imageUrl: '', description: '', tags: [], stockQty: null }
   dialog.value = true
 }
+
 function openEdit (r) {
   editing.value = r
   form.value = {
@@ -68,65 +100,94 @@ function openEdit (r) {
     categoryId: r.categoryId?._id || r.categoryId || '',
     imageUrl: r.imageUrl || '',
     description: r.description || '',
-    tags: Array.isArray(r.tags) ? r.tags : []
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    stockQty: r.stockQty ?? null,
   }
   dialog.value = true
 }
+
+function patchRow (data) {
+  const i = rows.value.findIndex(r => r._id === data._id)
+  if (i !== -1) rows.value[i] = data
+}
+
 async function save () {
   const ok = await formRef.value?.validate()
   if (!ok?.valid) return
+
+  // coerce stock to number or null
+  const raw = form.value.stockQty
+  const stockQty = (raw === '' || raw === null || raw === undefined) ? null : Number(raw)
+  if (stockQty !== null && (!Number.isInteger(stockQty) || stockQty < 0)) {
+    notify('Stock must be an integer ≥ 0 or left blank.', 'error')
+    return
+  }
+
   const payload = {
     name: form.value.name.trim(),
     categoryId: form.value.categoryId,
     imageUrl: form.value.imageUrl || '',
     description: form.value.description || '',
-    tags: Array.isArray(form.value.tags) ? form.value.tags : []
+    tags: Array.isArray(form.value.tags) ? form.value.tags : [],
+    stockQty,
   }
+
   try {
     if (editing.value) {
       const { data } = await api.put(`/foods/${editing.value._id}`, payload)
       patchRow(data)
+      notify('Food updated')
     } else {
       const { data } = await api.post('/foods', payload)
       rows.value.unshift(data)
+      notify('Food created')
     }
     dialog.value = false
   } catch (e) {
-    alert(e?.response?.data?.message || 'Save failed')
+    notify(e?.response?.data?.message || 'Save failed', 'error')
   }
 }
-function patchRow (data) {
-  const i = rows.value.findIndex(r => r._id === data._id)
-  if (i !== -1) rows.value[i] = data
-}
+
 async function removeOne (r) {
   if (!confirm(`Delete "${r.name}"?`)) return
   try {
     await api.delete(`/foods/${r._id}`)
     rows.value = rows.value.filter(x => x._id !== r._id)
+    notify('Food deleted')
   } catch (e) {
-    alert(e?.response?.data?.message || 'Delete failed')
+    notify(e?.response?.data?.message || 'Delete failed', 'error')
   }
 }
+
 async function toggle (r, scope, value) {
   try {
     const { data } = await api.patch(`/foods/${r._id}/toggle`, { scope, value })
     patchRow(data)
+    notify(`${scope === 'GLOBAL' ? 'Global' : 'Kitchen'} ${value ? 'enabled' : 'disabled'}`)
   } catch (e) {
-    alert(e?.response?.data?.message || 'Toggle failed')
+    notify(e?.response?.data?.message || 'Toggle failed', 'error')
   }
 }
+
 async function setStock (r) {
-  const v = prompt('Set daily limit (empty for unlimited):', r.dailyLimit ?? '')
+  const current = r.stockQty ?? ''
+  const v = prompt('Set stock quantity (leave empty for unlimited):', current)
   if (v === null) return
-  const dailyLimit = v === '' ? null : Number(v)
+  const stockQty = v === '' ? null : Number(v)
+  if (stockQty !== null && (!Number.isInteger(stockQty) || stockQty < 0)) {
+    notify('Enter an integer ≥ 0 or leave blank.', 'error')
+    return
+  }
   try {
-    const { data } = await api.patch(`/foods/${r._id}/stock`, { dailyLimit })
+    const { data } = await api.patch(`/foods/${r._id}/stock`, { stockQty })
     patchRow(data)
+    notify(stockQty === null ? 'Stock set to unlimited' : `Stock set to ${stockQty}`)
   } catch (e) {
-    alert(e?.response?.data?.message || 'Set stock failed')
+    notify(e?.response?.data?.message || 'Set stock failed', 'error')
   }
 }
+
+/* ---------------- init ---------------- */
 
 onMounted(async () => {
   await Promise.all([loadCats(), load()])
@@ -151,7 +212,7 @@ onMounted(async () => {
     <div class="pa-4">
       <!-- Filters -->
       <v-row dense class="mb-3">
-        <v-col cols="12" md="5">
+        <v-col cols="12" md="4">
           <v-text-field
             v-model="q"
             label="Search foods"
@@ -172,7 +233,16 @@ onMounted(async () => {
             @update:modelValue="load"
           />
         </v-col>
-        <v-col cols="12" md="3">
+        <v-col cols="12" md="2">
+          <v-checkbox
+            v-model="inStockOnly"
+            density="compact"
+            label="In stock only"
+            hide-details
+            @update:modelValue="load"
+          />
+        </v-col>
+        <v-col cols="12" md="2">
           <v-btn :loading="loading" @click="load" block>
             <v-icon start>mdi-refresh</v-icon> Refresh
           </v-btn>
@@ -180,7 +250,7 @@ onMounted(async () => {
       </v-row>
 
       <!-- Table -->
-      <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl">
+      <v-data-table :headers="headers" :items="filtered" :items-per-page="10" class="rounded-xl" :loading="loading">
         <template #item.image="{ item }">
           <v-avatar size="36" rounded="lg">
             <v-img :src="item.imageUrl || 'https://via.placeholder.com/60x60?text=Food'" cover />
@@ -192,33 +262,26 @@ onMounted(async () => {
         </template>
 
         <template #item.avail="{ item }">
-          <div class="d-flex ga-2 justify-center">
-            <!-- Global -->
+          <div class="d-flex ga-4 justify-center flex-wrap">
             <v-switch
               inset color="primary" hide-details
               :model-value="item.isActiveGlobal"
               @update:modelValue="val => toggle(item, 'GLOBAL', val)"
               label="Global"
             />
-
-            <!-- Kitchen -->
             <v-switch
               inset color="deep-purple" hide-details
               :model-value="item.isActiveKitchen"
               @update:modelValue="val => toggle(item, 'KITCHEN', val)"
               label="Kitchen"
             />
-
           </div>
         </template>
 
         <template #item.stock="{ item }">
           <div class="d-flex flex-column align-center">
-            <div v-if="item.dailyLimit === null">Unlimited</div>
-            <div v-else>
-              <strong>{{ item.stockRemaining ?? item.dailyLimit }}</strong> / {{ item.dailyLimit }}
-              <div class="text-caption text-medium-emphasis">({{ item.stockDate || '—' }})</div>
-            </div>
+            <div v-if="item.stockQty === null">Unlimited</div>
+            <div v-else><strong>{{ item.stockQty }}</strong></div>
             <v-btn size="x-small" variant="text" @click="setStock(item)">
               <v-icon start>mdi-database-edit</v-icon> Set
             </v-btn>
@@ -239,11 +302,15 @@ onMounted(async () => {
             </v-btn>
           </div>
         </template>
+
+        <template #no-data>
+          <div class="text-medium-emphasis pa-6">No foods found.</div>
+        </template>
       </v-data-table>
     </div>
 
     <!-- Dialog -->
-    <v-dialog v-model="dialog" max-width="640">
+    <v-dialog v-model="dialog" max-width="720">
       <v-card>
         <v-card-title>{{ editing ? 'Edit Food' : 'New Food' }}</v-card-title>
         <v-card-text>
@@ -261,8 +328,18 @@ onMounted(async () => {
               <v-col cols="12">
                 <v-textarea v-model="form.description" label="Description" rows="3" />
               </v-col>
-              <v-col cols="12">
+              <v-col cols="12" md="6">
                 <v-combobox v-model="form.tags" multiple chips label="Tags (spicy, vegan, ...)" />
+              </v-col>
+              <v-col cols="12" md="6">
+                <v-text-field
+                  v-model="form.stockQty"
+                  type="number"
+                  label="Stock (leave blank for unlimited)"
+                  :rules="[rules.nonnegIntOrEmpty]"
+                  hint="No daily reset; decremented on order; cancel restores."
+                  persistent-hint
+                />
               </v-col>
             </v-row>
           </v-form>
@@ -277,8 +354,12 @@ onMounted(async () => {
       </v-card>
     </v-dialog>
 
-    <!-- FAB: always-visible Add button -->
+    <!-- FAB -->
     <v-fab icon="mdi-plus" app location="bottom end" color="primary" @click="openCreate" />
+
+    <v-snackbar v-model="snackbar" :color="snackColor" timeout="2200">
+      {{ snackText }}
+    </v-snackbar>
   </v-card>
 </template>
 

@@ -25,34 +25,16 @@ function emitOrder (req, orderObj, event) {
   io.to(`room:order:${orderObj._id}`).emit(event, orderObj)
 }
 
-// Ensure `customerId` is a string and attach `customerName`
-// Works with plain objects or mongoose docs (with or without .lean()).
 function serializeOrder(o) {
   const x = o?.toObject ? o.toObject() : o || {}
   const cust = x.customerId
   const customerId = cust && typeof cust === 'object'
     ? String(cust._id || cust.id || '')
     : String(cust || '')
-
   const customerName = cust && typeof cust === 'object'
     ? (cust.name || null)
     : (x.customerName || null)
-
   return { ...x, customerId, customerName }
-}
-
-/* ---------- stock helpers ---------- */
-
-// Build maps for packages separately (packageId -> qty)
-function buildPackageMap(items) {
-  const pkgMap = new Map()
-  for (const it of items) {
-    if (String(it.kind).toUpperCase() !== 'PACKAGE' || !it.packageId) continue
-    const q = Math.max(1, parseInt(it.qty, 10) || 1)
-    const k = String(it.packageId)
-    pkgMap.set(k, (pkgMap.get(k) || 0) + q)
-  }
-  return pkgMap
 }
 
 /** Expand items to foodId -> qty (includes package contents) */
@@ -60,10 +42,11 @@ async function expandToFoods(items) {
   const map = new Map()
   for (const it of items) {
     const qty = Math.max(1, parseInt(it.qty, 10) || 1)
-    if (String(it.kind).toUpperCase() === 'FOOD' && it.foodId) {
+    const kind = String(it.kind || '').toUpperCase()
+    if (kind === 'FOOD' && it.foodId) {
       const k = String(it.foodId)
       map.set(k, (map.get(k) || 0) + qty)
-    } else if (String(it.kind).toUpperCase() === 'PACKAGE' && it.packageId) {
+    } else if (kind === 'PACKAGE' && it.packageId) {
       const pkg = await Package.findById(it.packageId).lean()
       if (!pkg) throw new Error('Package not found')
       for (const line of (pkg.items || [])) {
@@ -71,76 +54,45 @@ async function expandToFoods(items) {
         const k = String(line.foodId)
         map.set(k, (map.get(k) || 0) + add)
       }
+    } else {
+      throw new Error('Invalid item kind')
     }
   }
   return map
 }
 
-// Reserve package counts (if dailyLimit is set)
-async function reservePackages(session, pkgMap) {
-  // validate
-  for (const [pkgId, need] of pkgMap) {
-    const p = await Package.findById(pkgId).session(session)
-    if (!p) throw new Error('Package not found')
-    if (p.dailyLimit == null) continue
-    const remaining = Number(p.stockRemaining ?? p.dailyLimit)
-    if (remaining < need) {
-      throw new Error(`Insufficient stock for package "${p.name}". Remaining ${remaining}, need ${need}.`)
-    }
-  }
-  // decrement
-  for (const [pkgId, need] of pkgMap) {
-    const p = await Package.findById(pkgId).session(session)
-    if (p.dailyLimit == null) continue
-    p.stockRemaining = Number(p.stockRemaining ?? p.dailyLimit) - need
-    await p.save({ session })
-  }
-}
-
-// Restore package counts
-async function restorePackages(session, pkgMap) {
-  for (const [pkgId, qty] of pkgMap) {
-    const p = await Package.findById(pkgId).session(session)
-    if (!p) continue
-    if (p.dailyLimit == null) continue
-    p.stockRemaining = Number(p.stockRemaining ?? p.dailyLimit) + qty
-    if (p.dailyLimit != null && p.stockRemaining > p.dailyLimit) {
-      p.stockRemaining = p.dailyLimit
-    }
-    await p.save({ session })
-  }
-}
-
-// Reserve foods
-async function reserveFoods(session, foodMap) {
+/** Atomically decrement stock for foods (null = unlimited → skip) */
+async function decrementFoodsStock(session, foodMap) {
   for (const [foodId, need] of foodMap) {
-    const f = await Food.findById(foodId).session(session)
-    if (!f) throw new Error('Food not found')
-    if (f.dailyLimit == null) continue
-    const remaining = Number(f.stockRemaining ?? f.dailyLimit)
-    if (remaining < need) {
-      throw new Error(`Insufficient stock for "${f.name}". Remaining ${remaining}, need ${need}.`)
+    // fetch once to check unlimited vs numeric
+    const doc = await Food.findById(foodId)
+      .select('_id name stockQty isActiveGlobal isActiveKitchen')
+      .session(session)
+    if (!doc) throw new Error('Food not found')
+    if (doc.stockQty === null) continue // unlimited → no decrement
+    if (!doc.isActiveGlobal || !doc.isActiveKitchen) {
+      throw new Error(`"${doc.name}" is not available`)
     }
-  }
-  for (const [foodId, need] of foodMap) {
-    const f = await Food.findById(foodId).session(session)
-    if (f.dailyLimit == null) continue
-    f.stockRemaining = Number(f.stockRemaining ?? f.dailyLimit) - need
-    await f.save({ session })
+    // atomic check-and-decrement
+    const res = await Food.updateOne(
+      { _id: foodId, stockQty: { $gte: need } },
+      { $inc: { stockQty: -need } },
+      { session }
+    )
+    if (res.matchedCount === 0) {
+      throw new Error(`Not enough stock for "${doc.name}"`)
+    }
   }
 }
 
-// Restore foods
-async function restoreFoods(session, foodMap) {
+/** Increment back (only for numeric stock) */
+async function incrementFoodsStock(session, foodMap) {
   for (const [foodId, qty] of foodMap) {
-    const f = await Food.findById(foodId).session(session)
-    if (!f) continue
-    if (f.dailyLimit == null) continue
-    f.stockRemaining = Number(f.stockRemaining ?? f.dailyLimit) + qty
-    if (f.dailyLimit != null && f.stockRemaining > f.dailyLimit) {
-      f.stockRemaining = f.dailyLimit
-    }
-    await f.save({ session })
+    await Food.updateOne(
+      { _id: foodId, stockQty: { $ne: null } },
+      { $inc: { stockQty: qty } },
+      { session }
+    )
   }
 }
 
@@ -161,15 +113,13 @@ async function list (req, res, next) {
       filter.$or = [{ groupKey: rx }, { notes: rx }, { 'items.name': rx }]
     }
 
-    // populate customer name
     const rows = await Order.find(filter)
       .sort({ createdAt: -1 })
       .populate({ path: 'customerId', select: 'name' })
       .lean()
 
-    // Enrich missing item images for older orders
-    const needFoodIds = new Set()
-    const needPkgIds  = new Set()
+    // hydrate missing images from Food/Package (legacy orders)
+    const needFoodIds = new Set(), needPkgIds = new Set()
     for (const o of rows) {
       for (const it of o.items || []) {
         if (!it.imageUrl) {
@@ -178,7 +128,6 @@ async function list (req, res, next) {
         }
       }
     }
-
     let foodMap = new Map(), pkgMap = new Map()
     if (needFoodIds.size) {
       const foods = await Food.find({ _id: { $in: [...needFoodIds] } }).select('_id imageUrl').lean()
@@ -197,7 +146,6 @@ async function list (req, res, next) {
       }
     }
 
-    // add customerName + string customerId
     res.json(rows.map(serializeOrder))
   } catch (e) { next(e) }
 }
@@ -212,7 +160,7 @@ async function getOne (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// POST /orders  (reserve foods + packages)
+// POST /orders  (decrement foods now)
 async function create (req, res, next) {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -228,6 +176,7 @@ async function create (req, res, next) {
     const items = Array.isArray(req.body.items) ? req.body.items : []
     if (!items.length) return res.status(400).json({ message: 'At least one item is required' })
 
+    // Build normalized items (names/images) for storage
     const prepared = []
     for (const it of items) {
       const kind = String(it.kind || '').toUpperCase()
@@ -235,22 +184,23 @@ async function create (req, res, next) {
 
       if (kind === 'FOOD') {
         const f = await Food.findById(it.foodId).select('_id name imageUrl').session(session)
-        if (!f) return res.status(400).json({ message: 'Food not found', id: it.foodId })
+        if (!f) { await session.abortTransaction(); session.endSession(); return res.status(400).json({ message: 'Food not found', id: it.foodId }) }
         prepared.push({ kind: 'FOOD', foodId: f._id, name: f.name, imageUrl: f.imageUrl || '', qty, unitPrice: 0 })
       } else if (kind === 'PACKAGE') {
         const p = await Package.findById(it.packageId).select('_id name imageUrl').session(session)
-        if (!p) return res.status(400).json({ message: 'Package not found', id: it.packageId })
+        if (!p) { await session.abortTransaction(); session.endSession(); return res.status(400).json({ message: 'Package not found', id: it.packageId }) }
         prepared.push({ kind: 'PACKAGE', packageId: p._id, name: p.name, imageUrl: p.imageUrl || '', qty, unitPrice: 0 })
       } else {
+        await session.abortTransaction(); session.endSession()
         return res.status(400).json({ message: 'Invalid item kind', kind: it.kind })
       }
     }
 
-    // reserve packages and foods
-    const pkgMap  = buildPackageMap(items)
+    // Aggregate foods to decrement (packages expanded)
     const foodMap = await expandToFoods(items)
-    await reservePackages(session, pkgMap)
-    await reserveFoods(session,  foodMap)
+
+    // Decrement food stocks atomically
+    await decrementFoodsStock(session, foodMap)
 
     const [doc] = await Order.create([{
       type,
@@ -260,14 +210,13 @@ async function create (req, res, next) {
       notes: req.body.notes || '',
       items: prepared,
       grandTotal: 0,
-      stockCommitted: false,   // flips true on accept
+      stockCommitted: true, // we already decremented at create
       createdBy: authedId,
       updatedBy: authedId,
     }], { session })
 
     await session.commitTransaction()
 
-    // populate customer and serialize before emitting/returning
     await doc.populate({ path: 'customerId', select: 'name' })
     const order = serializeOrder(doc)
     emitOrder(req, order, 'order:new')
@@ -280,35 +229,24 @@ async function create (req, res, next) {
   }
 }
 
-// PATCH /orders/:id/accept  (commit reservation)
+// PATCH /orders/:id/accept (no stock work now)
 async function accept (req, res, next) {
-  const session = await mongoose.startSession()
-  session.startTransaction()
   try {
-    const order = await Order.findById(req.params.id).session(session)
+    const order = await Order.findById(req.params.id)
     if (!order) return res.status(404).json({ message: 'Order not found' })
     if (order.status !== STATUS.PLACED) {
       return res.status(400).json({ message: `Order must be ${STATUS.PLACED} before accepting` })
     }
-
     order.status = STATUS.ACCEPTED
     order.acceptedAt = new Date()
-    order.stockCommitted = true
     order.updatedBy = req.user?._id || null
-    await order.save({ session })
-
-    await session.commitTransaction()
+    await order.save()
 
     await order.populate({ path: 'customerId', select: 'name' })
     const payload = serializeOrder(order)
     emitOrder(req, payload, 'order:status')
     res.json(payload)
-  } catch (e) {
-    await session.abortTransaction()
-    next(e)
-  } finally {
-    session.endSession()
-  }
+  } catch (e) { next(e) }
 }
 
 // PATCH /orders/:id/start
@@ -378,7 +316,7 @@ async function deliver (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// PATCH /orders/:id/cancel  (ALWAYS restore stock)
+// PATCH /orders/:id/cancel  (restore foods)
 async function cancel (req, res, next) {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -389,11 +327,9 @@ async function cancel (req, res, next) {
       return res.status(400).json({ message: 'Order already finished' })
     }
 
-    // Always restore foods + packages when canceling
-    const pkgMap  = buildPackageMap(order.items)
+    // Expand items to foods and restore only numeric stocks
     const foodMap = await expandToFoods(order.items)
-    await restorePackages(session, pkgMap)
-    await restoreFoods(session,  foodMap)
+    await incrementFoodsStock(session, foodMap)
 
     order.status = STATUS.CANCELED
     order.canceledAt = new Date()
