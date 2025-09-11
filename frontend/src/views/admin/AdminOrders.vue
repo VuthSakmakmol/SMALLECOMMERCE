@@ -106,10 +106,19 @@ function upsert (o) {
   else rows.value[i] = o
 }
 
-/* ─────────────── detail helpers (unchanged) ─────────────── */
-async function fetchPackage(id) { /* ...your existing code... */ }
-async function fetchFood(id) { /* ...your existing code... */ }
-async function preloadForOrder(order) { /* ...your existing code... */ }
+/* ─────────────── helpers ─────────────── */
+function modsCount (it) {
+  if (!it || it.kind !== 'FOOD') return 0
+  if (Array.isArray(it.mods) && it.mods.length) return it.mods.length
+  const a = Array.isArray(it.ingredients) ? it.ingredients.filter(x => x.included || x.value != null).length : 0
+  const b = Array.isArray(it.groups) ? it.groups.filter(g => g.choice != null).length : 0
+  return a + b
+}
+
+/* ─────────────── detail helpers ─────────────── */
+async function fetchPackage(id) { /* optional cache fetch */ }
+async function fetchFood(id) { /* optional cache fetch */ }
+async function preloadForOrder(order) { /* optional preload */ }
 
 async function openDetail(order) {
   selected.value = order
@@ -131,7 +140,6 @@ onMounted(() => {
   })
 })
 </script>
-
 
 <template>
   <v-card class="rounded-2xl">
@@ -176,21 +184,35 @@ onMounted(() => {
           </div>
         </template>
 
-        <!-- Show item avatar + name; click to open details -->
+        <!-- Items with red pin if mods exist -->
         <template #item.items="{ item }">
           <div class="d-flex flex-wrap ga-2">
             <v-chip
               v-for="it in item.items"
               :key="`${it.kind}:${it.foodId || it.packageId}:${it.name || ''}`"
-              size="small"
+            
               class="pa-1"
               variant="outlined"
               @click="openDetail(item)"
             >
-              <v-avatar start size="22">
-                <v-img :src="it.imageUrl || 'https://via.placeholder.com/40?text=Img'" />
+              <v-avatar start size="32" style="margin-left: 1px;">
+                <v-img :src="it.imageUrl || 'https://via.placeholder.com/60?text=Img'" />
               </v-avatar>
               {{ it.qty }}× {{ it.name || 'Item' }}
+
+              <v-btn
+                v-if="modsCount(it) > 0"
+                size="x-small"
+                color="red"
+                variant="flat"
+                class="ml-2"
+                rounded="lg"
+                density="comfortable"
+                @click.stop="openDetail(item)"
+                title="View customizations"
+              >
+                {{ modsCount(it) }}
+              </v-btn>
             </v-chip>
           </div>
         </template>
@@ -247,13 +269,49 @@ onMounted(() => {
           <template v-for="it in selected?.items || []" :key="`${it.kind}:${it.foodId || it.packageId}:${it.name}`">
             <v-list-item>
               <template #prepend>
-                <v-avatar size="40">
-                  <v-img :src="it.imageUrl || 'https://via.placeholder.com/60?text=Img'" />
+                <v-avatar size="156" rounded="lg">
+                  <v-img :src="it.imageUrl || 'https://via.placeholder.com/80?text=Img'" cover />
                 </v-avatar>
               </template>
               <v-list-item-title>{{ it.qty }}× {{ it.name }}</v-list-item-title>
               <v-list-item-subtitle>{{ it.kind }}</v-list-item-subtitle>
             </v-list-item>
+
+            <!-- Customizations -->
+            <div v-if="modsCount(it) > 0" class="pl-12 mt-1 mb-3">
+              <div class="text-caption text-medium-emphasis mb-1">
+                Customizations:
+              </div>
+              <ul class="text-caption" style="margin:0;padding-left:16px;">
+                <li v-for="(m, idx) in (Array.isArray(it.mods) ? it.mods : [])" :key="idx">
+                  <template v-if="String(m.kind).toUpperCase() === 'INGREDIENT'">
+                    <strong>{{ m.label || 'Ingredient' }}</strong>:
+                    <template v-if="String(m.type).toUpperCase() === 'BOOLEAN'">
+                      {{ m.value ? 'Included' : 'Removed' }}
+                    </template>
+                    <template v-else-if="String(m.type).toUpperCase() === 'PERCENT'">
+                      {{ Number(m.value) }}%
+                    </template>
+                    <template v-else>
+                      {{ m.value }}
+                    </template>
+                  </template>
+                  <template v-else-if="String(m.kind).toUpperCase() === 'GROUP'">
+                    <strong>{{ m.label || 'Choice' }}</strong>: {{ m.value }}
+                  </template>
+                </li>
+                <li v-if="(!it.mods || it.mods.length===0) && Array.isArray(it.ingredients)"
+                    v-for="(ing, ii) in it.ingredients" :key="'ing-'+ii">
+                  <strong>{{ ing.name || 'Ingredient' }}</strong>:
+                  <template v-if="ing.value != null">{{ ing.value }}</template>
+                  <template v-else>{{ ing.included ? 'Included' : 'Removed' }}</template>
+                </li>
+                <li v-if="(!it.mods || it.mods.length===0) && Array.isArray(it.groups)"
+                    v-for="(g, gi) in it.groups" :key="'grp-'+gi">
+                  <strong>{{ g.choiceLabel || 'Choice' }}</strong>: {{ g.choice }}
+                </li>
+              </ul>
+            </div>
 
             <!-- If package, show its foods -->
             <v-expand-transition>
@@ -265,9 +323,9 @@ onMounted(() => {
                     :key="String(line.foodId)"
                   >
                     <v-chip size="small" variant="tonal" class="pa-1">
-                      <v-avatar start size="20">
-                        <v-img :src="(foodCache.get(String(line.foodId))?.imageUrl) || 'https://via.placeholder.com/40?text=Img'" />
-                      </v-avatar>
+                    <v-avatar start size="28">
+                      <v-img :src="(foodCache.get(String(line.foodId))?.imageUrl) || 'https://via.placeholder.com/60?text=Img'" />
+                    </v-avatar>
                       ×{{ line.qty }} {{ foodCache.get(String(line.foodId))?.name || '...' }}
                     </v-chip>
                   </template>

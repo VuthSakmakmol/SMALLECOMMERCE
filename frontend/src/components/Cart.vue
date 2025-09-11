@@ -1,4 +1,3 @@
-<!-- src/components/Cart.vue -->
 <script setup>
 import { ref, computed } from 'vue'
 import api from '@/utils/api'
@@ -51,7 +50,7 @@ async function openCustomize (item) {
   if (item.kind !== 'FOOD') return
   loading.value = true
   try {
-    const { data } = await api.get(`/foods/${item.id}`) // expects populated ingredients & groups
+    const { data } = await api.get(`/foods/${item.id}`) // populated with attachments
     foodDef.value = data
 
     const ingMap   = new Map((item.ingredients || []).map(i => [String(i.ingredientId), i]))
@@ -63,7 +62,7 @@ async function openCustomize (item) {
       return {
         ingredientId: id,
         included: sel.included ?? !!att.defaultIncluded,
-        value: sel.value ?? null
+        value: sel.value ?? att.defaultValue ?? att.ingredientId?.defaultValue ?? null
       }
     })
     const grps = (data.choiceGroups || []).map(att => {
@@ -97,20 +96,58 @@ function grpDef (groupId) {
   return x ? { attach: x, def: x.groupId } : null
 }
 
-/* persist selections back to cart item */
+/* persist selections back to cart item (WITH DEFAULTS for later diff) */
 function saveCustomize () {
   if (!editing.value) return
-  cart.updateItem(editing.value.key, {
-    ingredients: custom.value.ingredients.map(i => ({
-      ingredientId: i.ingredientId,
-      included: !!i.included,
-      value: i.value ?? null
-    })),
-    groups: custom.value.groups.map(g => ({
-      groupId: g.groupId,
-      choice: g.choice ?? null
-    }))
+
+  // helper: label for a choice value within a group
+  const choiceLabelOf = (groupId, value) => {
+    const grp = (foodDef.value?.choiceGroups || []).find(a => {
+      const id = a.groupId?._id || a.groupId
+      return String(id) === String(groupId)
+    })
+    const choices = grp?.groupId?.choices || grp?.choices || []
+    const m = choices.find(c => String(c.value) === String(value))
+    return m?.label ?? null
+  }
+
+  // INGREDIENTS: store selection + DEFAULTS + TYPE (for later diff)
+  const ings = custom.value.ingredients.map(sel => {
+    const att = (foodDef.value?.ingredients || []).find(a => {
+      const id = a.ingredientId?._id || a.ingredientId
+      return String(id) === String(sel.ingredientId)
+    })
+    const def  = att?.ingredientId
+    return {
+      ingredientId: sel.ingredientId,
+      included: !!sel.included,
+      value: sel.value ?? null,
+      name: def?.name || null,
+
+      // defaults to compute diff at submit
+      _type: (def?.type || 'BOOLEAN').toUpperCase(),
+      _defaultIncluded: !!att?.defaultIncluded,
+      _defaultValue: att?.defaultValue ?? def?.defaultValue ?? null,
+    }
   })
+
+  // GROUPS: store selection + DEFAULT (for later diff)
+  const grps = custom.value.groups.map(g => {
+    const att = (foodDef.value?.choiceGroups || []).find(a => {
+      const id = a.groupId?._id || a.groupId
+      return String(id) === String(g.groupId)
+    })
+    return {
+      groupId: g.groupId,
+      choice: g.choice ?? null,
+      choiceLabel: g.choice != null ? choiceLabelOf(g.groupId, g.choice) : null,
+
+      _defaultChoice: att?.defaultChoice ?? null,
+      _required: !!att?.groupId?.required || !!att?.required,
+    }
+  })
+
+  cart.updateItem(editing.value.key, { ingredients: ings, groups: grps })
   closeDialog()
 }
 </script>

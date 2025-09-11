@@ -9,9 +9,14 @@ const ORDER = {
 
 export const useCart = defineStore('cart', {
   state: () => ({
-    // items: [{ key, kind:'FOOD'|'PACKAGE', id, name, qty, imageUrl?, items?, stockQty? }]
+    // items: [{
+    //   key, kind:'FOOD'|'PACKAGE', id, name, qty,
+    //   imageUrl?, stockQty?,
+    //   ingredients: [{ ingredientId, included, value }],
+    //   groups:      [{ groupId, choice }]
+    // }]
     items: [],
-    orderType: ORDER.INDIVIDUAL, // 'INDIVIDUAL' | 'GROUP' | 'WORKSHOP'
+    orderType: ORDER.INDIVIDUAL,
     groupKey: '',
     notes: '',
   }),
@@ -28,7 +33,6 @@ export const useCart = defineStore('cart', {
 
     /* ---------- stock helpers ---------- */
     _capFoodQtySnapshot(food) {
-      // snapshot current stock to item (null = unlimited)
       const v = food?.stockQty
       return (v === null || v === undefined) ? null : Number(v)
     },
@@ -37,16 +41,12 @@ export const useCart = defineStore('cart', {
       const k = this._key('FOOD', food._id)
       const current = this.items.find(i => i.key === k)?.qty || 0
       const stock = this._capFoodQtySnapshot(food)
-      if (stock === null) return wantAdd // unlimited
+      if (stock === null) return wantAdd
       const room = Math.max(0, stock - current)
       return Math.min(room, Math.max(1, Number(wantAdd) || 1))
     },
 
-    /* ---------- order-type constraints (from your flow) ----------
-       - INDIVIDUAL: foods only (no packages)
-       - WORKSHOP:   packages only (no foods)
-       - GROUP:      can mix
-    -------------------------------------------------------------- */
+    /* ---------- order-type constraints ---------- */
     _violatesTypeOnAdd(kind) {
       if (this.orderType === ORDER.INDIVIDUAL && kind === 'PACKAGE') return true
       if (this.orderType === ORDER.WORKSHOP && kind === 'FOOD') return true
@@ -56,13 +56,10 @@ export const useCart = defineStore('cart', {
     setOrderType(next) {
       const type = String(next || '').toUpperCase()
       if (![ORDER.INDIVIDUAL, ORDER.GROUP, ORDER.WORKSHOP].includes(type)) return false
-
-      // Prevent switching to a mode that conflicts with current cart contents
       if (type === ORDER.INDIVIDUAL && this.hasPackages) return false
       if (type === ORDER.WORKSHOP && this.hasFoods) return false
-
       this.orderType = type
-      if (this.orderType !== ORDER.GROUP) this.groupKey = '' // only GROUP can carry a key
+      if (this.orderType !== ORDER.GROUP) this.groupKey = ''
       return true
     },
 
@@ -76,7 +73,6 @@ export const useCart = defineStore('cart', {
         return { ok: false, reason: 'individual_needs_food' }
       if (this.orderType === ORDER.WORKSHOP && !this.hasPackages)
         return { ok: false, reason: 'workshop_needs_package' }
-      // GROUP has no extra constraints
       return { ok: true }
     },
 
@@ -90,9 +86,9 @@ export const useCart = defineStore('cart', {
 
       const k = this._key('FOOD', food._id)
       const found = this.items.find(i => i.key === k)
+
       if (found) {
         found.qty += allowed
-        // keep the freshest snapshot of stock
         found.stockQty = this._capFoodQtySnapshot(food)
         found.imageUrl = food.imageUrl || found.imageUrl || ''
         found.name = food.name || found.name
@@ -105,12 +101,15 @@ export const useCart = defineStore('cart', {
           qty: allowed,
           imageUrl: food.imageUrl || '',
           stockQty: this._capFoodQtySnapshot(food),
+          // customization containers expected by Cart.vue
+          ingredients: [],
+          groups: []
         })
       }
       return { ok: true, added: allowed }
     },
 
-    // Store package contents so UI can show them; packages assumed unlimited (no stockQty)
+    // Packages assumed unlimited stock
     addPackage(pkg, qty = 1) {
       if (!pkg?._id) return { ok: false, reason: 'invalid_package' }
       if (this._violatesTypeOnAdd('PACKAGE')) return { ok: false, reason: 'type_conflict' }
@@ -122,7 +121,6 @@ export const useCart = defineStore('cart', {
         found.qty += addN
         found.imageUrl = pkg.imageUrl || found.imageUrl || ''
         found.name = pkg.name || found.name
-        if (Array.isArray(pkg.items)) found.items = pkg.items.map(it => ({ foodId: it.foodId, qty: it.qty }))
       } else {
         this.items.push({
           key: k,
@@ -130,8 +128,10 @@ export const useCart = defineStore('cart', {
           id: pkg._id,
           name: pkg.name,
           qty: addN,
-          items: Array.isArray(pkg.items) ? pkg.items.map(it => ({ foodId: it.foodId, qty: it.qty })) : [],
           imageUrl: pkg.imageUrl || '',
+          // keep consistent shape though packages might not use them
+          ingredients: [],
+          groups: []
         })
       }
       return { ok: true, added: addN }
@@ -142,7 +142,6 @@ export const useCart = defineStore('cart', {
       if (it.kind === 'FOOD') {
         const cap = it.stockQty ?? null
         if (cap === null || it.qty < cap) it.qty++
-        // else: hit cap, no-op
       } else {
         it.qty++
       }
@@ -168,6 +167,33 @@ export const useCart = defineStore('cart', {
       this.notes = ''
       this.groupKey = ''
       this.orderType = ORDER.INDIVIDUAL
+    },
+
+    /* ---------- used by Customize dialog ---------- */
+    getItemIndex(target) {
+      if (!target) return -1
+      if (typeof target === 'string') return this.items.findIndex(i => i.key === target)
+      if (target.key) return this.items.findIndex(i => i.key === target.key)
+      if (target.kind && target.id) return this.items.findIndex(i => i.key === this._key(target.kind, target.id))
+      return -1
+    },
+
+    /** Patch an item by key or object (Cart.vue calls updateItem(key, patch)) */
+    updateItem(target, patch = {}) {
+      const idx = this.getItemIndex(target)
+      if (idx === -1) return { ok: false, reason: 'not_found' }
+
+      const old = this.items[idx]
+      // Ensure ingredients/groups exist even if omitted in patch
+      const next = {
+        ...old,
+        ...patch,
+        ingredients: patch.ingredients ?? old.ingredients ?? [],
+        groups: patch.groups ?? old.groups ?? []
+      }
+
+      this.items[idx] = next
+      return { ok: true, item: next }
     },
   }
 })

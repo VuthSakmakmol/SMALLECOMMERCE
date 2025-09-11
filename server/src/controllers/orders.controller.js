@@ -64,10 +64,32 @@ async function expandToFoods(items, session = null) {
   return map
 }
 
+/** Convert mods → readable snapshots (what we show back). */
+function snapshotsFromMods(mods = []) {
+  const ingredients = []
+  const groups = []
+  for (const m of mods) {
+    if (m.kind === 'INGREDIENT') {
+      ingredients.push({
+        ingredientId: m.ingredientId,
+        included: m.type === 'BOOLEAN' ? !!m.value : true,
+        value: m.type === 'BOOLEAN' ? null : m.value,
+        name: m.label || null,
+      })
+    } else if (m.kind === 'GROUP') {
+      groups.push({
+        groupId: m.groupId,
+        choice: m.value,
+        choiceLabel: m.choiceLabel || m.label || null,
+      })
+    }
+  }
+  return { ingredients, groups }
+}
+
 /** Atomically decrement stock for foods (null = unlimited → skip) */
 async function decrementFoodsStock(session, foodMap) {
   for (const [foodId, need] of foodMap) {
-    // fetch once to check unlimited vs numeric and availability
     const doc = await Food.findById(foodId)
       .select('_id name stockQty isActiveGlobal isActiveKitchen')
       .session(session)
@@ -75,7 +97,7 @@ async function decrementFoodsStock(session, foodMap) {
     if (!doc.isActiveGlobal || !doc.isActiveKitchen) {
       throw new Error(`"${doc.name}" is not available`)
     }
-    if (doc.stockQty === null) continue // unlimited → no decrement
+    if (doc.stockQty === null) continue // unlimited
     const res = await Food.updateOne(
       { _id: foodId, stockQty: { $gte: need } },
       { $inc: { stockQty: -need } },
@@ -98,91 +120,199 @@ async function incrementFoodsStock(session, foodMap) {
   }
 }
 
-/** Sanitize and normalize item.mods based on food attachments (Ingredients/ChoiceGroups) */
+/**
+ * Sanitize and normalize user-submitted mods based on food attachments.
+ * IMPORTANT:
+ *  - INGREDIENTS: save ONLY what the user submitted (no defaults added).
+ *  - GROUPS: save submitted; if a group is REQUIRED and missing, fill its default.
+ */
 async function sanitizeModsForFood(foodDoc, submittedMods = []) {
   const clean = []
-  const ingMap = new Map()
-  const grpMap = new Map()
 
-  // attachments on the food (populated in create())
-  for (const it of (foodDoc.ingredients || [])) {
-    const id = String(it.ingredientId?._id || it.ingredientId)
-    ingMap.set(id, it)
+  // attachments (what this food allows)
+  const ingAttach = new Map()
+  const grpAttach = new Map()
+  for (const a of (foodDoc.ingredients || [])) {
+    const id = String(a.ingredientId?._id || a.ingredientId)
+    ingAttach.set(id, a)
   }
   for (const g of (foodDoc.choiceGroups || [])) {
     const id = String(g.groupId?._id || g.groupId)
-    grpMap.set(id, g)
+    grpAttach.set(id, g)
   }
 
-  // load library definitions
-  const ingIds = [...ingMap.keys()]
-  const grpIds = [...grpMap.keys()]
+  // library definitions (types, ranges, choices)
+  const ingIds = [...ingAttach.keys()]
+  const grpIds = [...grpAttach.keys()]
   const [ingDefs, grpDefs] = await Promise.all([
     ingIds.length ? Ingredient.find({ _id: { $in: ingIds } }).lean() : [],
     grpIds.length ? ChoiceGroup.find({ _id: { $in: grpIds } }).lean() : []
   ])
-  const ingDefMap = new Map(ingDefs.map(x => [String(x._id), x]))
-  const grpDefMap = new Map(grpDefs.map(x => [String(x._id), x]))
+  const ingDef = new Map(ingDefs.map(x => [String(x._id), x]))
+  const grpDef = new Map(grpDefs.map(x => [String(x._id), x]))
+
+  const seenGrp = new Set()
 
   for (const m of (submittedMods || [])) {
-    const kind = String(m.kind || '').toUpperCase() // 'INGREDIENT' | 'GROUP'
+    const kind = String(m.kind || '').toUpperCase()
     if (kind === 'INGREDIENT') {
       const id = String(m.ingredientId || '')
-      const attach = ingMap.get(id)
-      const def = ingDefMap.get(id)
+      const attach = ingAttach.get(id)
+      const def = ingDef.get(id)
       if (!attach || !def) continue
 
-      if (def.type === 'BOOLEAN') {
+      const type = String(def.type || 'BOOLEAN').toUpperCase()
+      if (type === 'BOOLEAN') {
         const v = !!m.value
-        if (attach.defaultIncluded && v === false && !attach.removable) continue
-        clean.push({ kind:'INGREDIENT', ingredientId: id, key: def.slug, type: def.type, value: v, label: def.name })
-      } else if (def.type === 'PERCENT') {
-        const n = Number(m.value ?? attach.defaultValue ?? def.defaultValue ?? 0)
-        const v = Math.max(def.min ?? 0, Math.min(def.max ?? 100, Number.isFinite(n) ? n : 0))
-        clean.push({ kind:'INGREDIENT', ingredientId: id, key: def.slug, type: def.type, value: v, label: def.name })
-      } else if (def.type === 'CHOICE') {
+        clean.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type, value:v, label:def.name })
+      } else if (type === 'PERCENT') {
+        const n = Number(m.value)
+        if (!Number.isFinite(n)) continue
+        const v = Math.max(def.min ?? 0, Math.min(def.max ?? 100, n))
+        clean.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type, value:v, label:def.name })
+      } else if (type === 'CHOICE') {
         const allowed = (def.choices || []).map(c => c.value)
-        const val = allowed.includes(m.value) ? m.value : (attach.defaultValue ?? def.defaultValue ?? null)
-        if (val != null) {
-          clean.push({ kind:'INGREDIENT', ingredientId: id, key: def.slug, type: def.type, value: val, label: def.name })
-        }
+        const val = allowed.includes(m.value) ? m.value : null
+        if (val != null) clean.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type, value:val, label:def.name })
       }
     }
 
     if (kind === 'GROUP') {
       const id = String(m.groupId || '')
-      const attach = grpMap.get(id)
-      const def = grpDefMap.get(id)
+      const attach = grpAttach.get(id)
+      const def = grpDef.get(id)
       if (!attach || !def) continue
       const allowed = (def.choices || []).map(c => c.value)
-      const val = allowed.includes(m.value) ? m.value : (attach.defaultChoice ?? allowed[0] ?? null)
-      if (val != null) clean.push({ kind:'GROUP', groupId: id, key: def.key, type: 'CHOICE', value: val, label: def.name })
+      const val = allowed.includes(m.value) ? m.value : null
+      if (val != null) {
+        seenGrp.add(id)
+        clean.push({ kind:'GROUP', groupId:id, key:def.key, type:'CHOICE', value:val, label:def.name })
+      }
     }
   }
 
-  // ensure required groups exist
-  for (const [gid, attach] of grpMap) {
-    const def = grpDefMap.get(gid)
+  // fill defaults for REQUIRED groups that user didn't submit
+  for (const [gid, attach] of grpAttach) {
+    if (seenGrp.has(gid)) continue
+    const def = grpDef.get(gid)
     if (!def) continue
-    const exists = clean.some(x => x.kind === 'GROUP' && x.groupId === gid)
-    if (!exists) {
-      const allowed = (def.choices || []).map(c => c.value)
-      const val = attach.defaultChoice ?? allowed[0] ?? null
-      if (def.required && val == null) throw new Error(`Missing required choice: ${def.name}`)
-      if (val != null) clean.push({ kind:'GROUP', groupId: gid, key: def.key, type: 'CHOICE', value: val, label: def.name })
-    }
+    const allowed = (def.choices || []).map(c => c.value)
+    const val = attach.defaultChoice ?? allowed[0] ?? null
+    if (def.required && val == null) throw new Error(`Missing required choice: ${def.name}`)
+    if (val != null) clean.push({ kind:'GROUP', groupId:gid, key:def.key, type:'CHOICE', value:val, label:def.name })
   }
 
   return clean
 }
 
+/** ── NEW: derive submitted mods from legacy snapshots if client didn't send mods ── */
+async function deriveModsFromLegacySnapshots(foodDoc, it) {
+  const mods = []
+
+  const ingAttach = new Map()
+  const grpAttach = new Map()
+  for (const a of (foodDoc.ingredients || [])) {
+    const id = String(a.ingredientId?._id || a.ingredientId)
+    ingAttach.set(id, a)
+  }
+  for (const g of (foodDoc.choiceGroups || [])) {
+    const id = String(g.groupId?._id || g.groupId)
+    grpAttach.set(id, g)
+  }
+
+  const ingIds = [...ingAttach.keys()]
+  const grpIds = [...grpAttach.keys()]
+  const [ingDefs, grpDefs] = await Promise.all([
+    ingIds.length ? Ingredient.find({ _id: { $in: ingIds } }).lean() : [],
+    grpIds.length ? ChoiceGroup.find({ _id: { $in: grpIds } }).lean() : []
+  ])
+  const ingDef = new Map(ingDefs.map(x => [String(x._id), x]))
+  const grpDef = new Map(grpDefs.map(x => [String(x._id), x]))
+
+  // INGREDIENTS from legacy snapshots
+  for (const sel of (it.ingredients || [])) {
+    const id  = String(sel.ingredientId || '')
+    const def = ingDef.get(id)
+    if (!def) continue
+    const type = String(def.type || 'BOOLEAN').toUpperCase()
+
+    if (type === 'BOOLEAN') {
+      // record explicit include true/false when provided
+      if (typeof sel.included === 'boolean') {
+        mods.push({
+          kind: 'INGREDIENT',
+          ingredientId: id,
+          key: def.slug,
+          type,
+          value: !!sel.included,
+          label: def.name
+        })
+      }
+    } else if (type === 'PERCENT') {
+      // only when included AND numeric value present
+      if (sel.included && sel.value != null) {
+        const n = Number(sel.value)
+        if (Number.isFinite(n)) {
+          const clamped = Math.max(def.min ?? 0, Math.min(def.max ?? 100, n))
+          mods.push({
+            kind: 'INGREDIENT',
+            ingredientId: id,
+            key: def.slug,
+            type,
+            value: clamped,
+            label: def.name
+          })
+        }
+      }
+    } else if (type === 'CHOICE') {
+      if (sel.included && sel.value != null) {
+        const allowed = (def.choices || []).map(c => c.value)
+        if (allowed.includes(sel.value)) {
+          mods.push({
+            kind: 'INGREDIENT',
+            ingredientId: id,
+            key: def.slug,
+            type,
+            value: sel.value,
+            label: def.name
+          })
+        }
+      }
+    }
+  }
+
+  // GROUPS from legacy snapshots
+  for (const g of (it.groups || [])) {
+    const id  = String(g.groupId || '')
+    const def = grpDef.get(id)
+    if (!def) continue
+    const allowed = (def.choices || []).map(c => c.value)
+    if (g.choice != null && allowed.includes(g.choice)) {
+      mods.push({
+        kind: 'GROUP',
+        groupId: id,
+        key: def.key,
+        type: 'CHOICE',
+        value: g.choice,
+        label: def.name
+      })
+    }
+  }
+
+  return mods
+}
+
 /* ───────────────── controllers ───────────────── */
 
-// GET /orders?status=&type=&groupKey=&q=
+// GET /orders?status=&type=&groupKey=&q=&scope=
 async function list (req, res, next) {
   try {
-    const { status, type, groupKey, q } = req.query
+    const { status, type, groupKey, q, scope } = req.query
     const filter = {}
+
+    if (String(scope).toUpperCase() === 'CUSTOMER' && req.user?._id) {
+      filter.customerId = req.user._id
+    }
 
     if (status === 'ACTIVE') filter.status = { $nin: [STATUS.DELIVERED, STATUS.CANCELED] }
     else if (status) filter.status = status
@@ -226,7 +356,8 @@ async function list (req, res, next) {
       }
     }
 
-    res.json(rows.map(serializeOrder))
+    // send what we saved: mods + derived snapshots
+    res.json(rows.map(o => serializeOrder(o)))
   } catch (e) { next(e) }
 }
 
@@ -240,7 +371,7 @@ async function getOne (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// POST /orders  (decrement foods now, store sanitized mods)
+// POST /orders  (decrement foods now, store ONLY submitted ingredient mods)
 async function create (req, res, next) {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -277,7 +408,20 @@ async function create (req, res, next) {
           await session.abortTransaction(); session.endSession()
           return res.status(400).json({ message: 'Food not found', id: it.foodId })
         }
-        const safeMods = await sanitizeModsForFood(f, Array.isArray(it.mods) ? it.mods : [])
+
+        // sanitize exactly what user submitted; OR derive from legacy snapshots
+        const submittedMods = Array.isArray(it.mods) ? it.mods : null
+        let safeMods
+        if (submittedMods && submittedMods.length) {
+          safeMods = await sanitizeModsForFood(f, submittedMods)
+        } else {
+          const legacyMods = await deriveModsFromLegacySnapshots(f, it)
+          safeMods = await sanitizeModsForFood(f, legacyMods)
+        }
+
+        // derive snapshots from mods (so we always show what user picked)
+        const snaps = snapshotsFromMods(safeMods)
+
         prepared.push({
           kind: 'FOOD',
           foodId: f._id,
@@ -285,7 +429,9 @@ async function create (req, res, next) {
           imageUrl: f.imageUrl || '',
           qty,
           unitPrice: 0,
-          mods: safeMods
+          mods: safeMods,
+          ingredients: snaps.ingredients,
+          groups: snaps.groups,
         })
       } else if (kind === 'PACKAGE') {
         const p = await Package.findById(it.packageId).select('_id name imageUrl').session(session)
@@ -320,7 +466,7 @@ async function create (req, res, next) {
       notes: req.body.notes || '',
       items: prepared,
       grandTotal: 0,
-      stockCommitted: true, // we decreased at create
+      stockCommitted: true,
       createdBy: authedId,
       updatedBy: authedId,
     }], { session })
@@ -339,7 +485,7 @@ async function create (req, res, next) {
   }
 }
 
-// PATCH /orders/:id/accept (no stock change)
+// PATCH /orders/:id/accept
 async function accept (req, res, next) {
   try {
     const order = await Order.findById(req.params.id)
