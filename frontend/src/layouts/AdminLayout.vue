@@ -14,8 +14,8 @@ const links = [
   { to: '/admin',            text: 'Dashboard',  icon: 'mdi-home-outline' }, // ← was "Overview"
   { to: '/admin/orders',     text: 'Orders',    icon: 'mdi-receipt-text-outline' },
   { to: '/admin/categories', text: 'Categories',icon: 'mdi-shape-outline' },
-  { to: '/admin/ingredients',      text: 'Incredient',     icon: 'mdi-food' },
-  { to: '/admin/choice-groups',      text: 'Choice-group',     icon: 'mdi-food' },
+  { to: '/admin/ingredients',      text: 'Incredient',     icon: 'mdi-food-apple-outline' },
+  { to: '/admin/choice-groups',      text: 'Choice-group',     icon: 'mdi-shape-outline' },
   { to: '/admin/foods',      text: 'Foods',     icon: 'mdi-food' },
   { to: '/admin/packages',   text: 'Packages',  icon: 'mdi-package-variant-closed' },
   { to: '/admin/users',      text: 'Users',     icon: 'mdi-account-group-outline' },

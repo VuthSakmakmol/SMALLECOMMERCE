@@ -315,15 +315,32 @@ async function save () {
         </template>
 
         <template #item.avail="{ item }">
-          <div class="d-flex ga-2 justify-center">
-            <v-switch inset hide-details color="primary"
+          <div class="avail-flex">
+            <v-switch
+              hide-details
+              color="primary"
+              density="compact"
+              inset
+              class="avail-switch"
               :model-value="item.isActiveGlobal"
-              @update:modelValue="val => toggleAvail(item, 'GLOBAL', val)" label="Global"/>
-            <v-switch inset hide-details color="deep-purple"
+              @update:modelValue="val => toggleAvail(item, 'GLOBAL', val)"
+              label="Global"
+            />
+            <v-switch
+              hide-details
+              color="deep-purple"
+              density="compact"
+              inset
+              class="avail-switch"
               :model-value="item.isActiveKitchen"
-              @update:modelValue="val => toggleAvail(item, 'KITCHEN', val)" label="Kitchen"/>
+              @update:modelValue="val => toggleAvail(item, 'KITCHEN', val)"
+              label="Kitchen"
+            />
           </div>
         </template>
+
+
+
 
         <template #item.stock="{ item }">
           <div class="d-flex flex-column align-center">
@@ -511,4 +528,21 @@ async function save () {
 
 <style scoped>
 .v-switch .v-label { font-size: 12px }
+
+.avail-flex {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px; /* space between switches */
+}
+
+.avail-switch {
+  flex: 0 0 auto;       /* don’t stretch full width */
+  min-width: unset;     /* collapse to content */
+}
+
+.avail-switch .v-label {
+  white-space: nowrap;  /* prevent “Glo bal” wrap */
+}
+
 </style>

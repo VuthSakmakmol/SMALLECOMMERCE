@@ -19,6 +19,11 @@ export const useCart = defineStore('cart', {
     orderType: ORDER.INDIVIDUAL,
     groupKey: '',
     notes: '',
+
+    // ── Pre-order fields ──
+    scheduledDate: '',   // 'YYYY-MM-DD'
+    scheduledTime: '',   // 'HH:mm'
+    receivePlace: '',    // free text or dropdown selection
   }),
 
   getters: {
@@ -73,6 +78,13 @@ export const useCart = defineStore('cart', {
         return { ok: false, reason: 'individual_needs_food' }
       if (this.orderType === ORDER.WORKSHOP && !this.hasPackages)
         return { ok: false, reason: 'workshop_needs_package' }
+
+      // ── New preorder validation ──
+      if (!this.scheduledDate || !this.scheduledTime)
+        return { ok: false, reason: 'schedule_required' }
+      if (!this.receivePlace.trim())
+        return { ok: false, reason: 'receive_place_required' }
+
       return { ok: true }
     },
 
@@ -101,15 +113,13 @@ export const useCart = defineStore('cart', {
           qty: allowed,
           imageUrl: food.imageUrl || '',
           stockQty: this._capFoodQtySnapshot(food),
-          // customization containers expected by Cart.vue
-          ingredients: [],
+          ingredients: [],  // for Cart.vue customize dialog
           groups: []
         })
       }
       return { ok: true, added: allowed }
     },
 
-    // Packages assumed unlimited stock
     addPackage(pkg, qty = 1) {
       if (!pkg?._id) return { ok: false, reason: 'invalid_package' }
       if (this._violatesTypeOnAdd('PACKAGE')) return { ok: false, reason: 'type_conflict' }
@@ -129,7 +139,6 @@ export const useCart = defineStore('cart', {
           name: pkg.name,
           qty: addN,
           imageUrl: pkg.imageUrl || '',
-          // keep consistent shape though packages might not use them
           ingredients: [],
           groups: []
         })
@@ -160,16 +169,21 @@ export const useCart = defineStore('cart', {
       it.qty = n
     },
 
-    remove(it) { this.items = this.items.filter(x => x !== it) },
+    remove(it) {
+      this.items = this.items.filter(x => x !== it)
+    },
 
     clear() {
       this.items = []
       this.notes = ''
       this.groupKey = ''
       this.orderType = ORDER.INDIVIDUAL
+      this.scheduledDate = ''
+      this.scheduledTime = ''
+      this.receivePlace = ''
     },
 
-    /* ---------- used by Customize dialog ---------- */
+    /* ---------- customize dialog helpers ---------- */
     getItemIndex(target) {
       if (!target) return -1
       if (typeof target === 'string') return this.items.findIndex(i => i.key === target)
@@ -178,22 +192,28 @@ export const useCart = defineStore('cart', {
       return -1
     },
 
-    /** Patch an item by key or object (Cart.vue calls updateItem(key, patch)) */
     updateItem(target, patch = {}) {
       const idx = this.getItemIndex(target)
       if (idx === -1) return { ok: false, reason: 'not_found' }
 
       const old = this.items[idx]
-      // Ensure ingredients/groups exist even if omitted in patch
       const next = {
         ...old,
         ...patch,
         ingredients: patch.ingredients ?? old.ingredients ?? [],
         groups: patch.groups ?? old.groups ?? []
       }
-
       this.items[idx] = next
       return { ok: true, item: next }
     },
+
+    /* ---------- preorder helpers ---------- */
+    setSchedule(dateStr, timeStr) {
+      this.scheduledDate = String(dateStr || '')
+      this.scheduledTime = String(timeStr || '')
+    },
+    setReceivePlace(place) {
+      this.receivePlace = String(place || '')
+    }
   }
 })

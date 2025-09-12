@@ -17,6 +17,15 @@ const cart = useCart()
 const count = computed(() => cart.count)
 const items = computed(() => cart.items)
 
+/* Suggested places (editable). Change to v-combobox if you want free typing + chips */
+const placeOptions = [
+  'Meeting Room A',
+  'Meeting Room B',
+  'HR Office',
+  'Shipping Office',
+  'Reception Desk'
+]
+
 /* ------- customize dialog state ------- */
 const editing = ref(null)        // cart item object
 const foodDef = ref(null)        // GET /foods/:id populated
@@ -154,7 +163,7 @@ function saveCustomize () {
 
 <template>
   <!-- Drawer -->
-  <v-navigation-drawer v-model="open" location="right" temporary width="440">
+  <v-navigation-drawer v-model="open" location="right" temporary width="460">
     <v-toolbar flat>
       <v-toolbar-title>Cart ({{ count }})</v-toolbar-title>
       <v-spacer />
@@ -162,6 +171,7 @@ function saveCustomize () {
     </v-toolbar>
 
     <div class="pa-3">
+      <!-- Items list -->
       <v-list density="comfortable">
         <v-list-item v-for="it in items" :key="it.key" class="rounded-lg">
           <template #prepend>
@@ -216,8 +226,69 @@ function saveCustomize () {
 
       <v-divider class="my-3" />
 
-      <!-- Extra controls slot (order type, notes) -->
-      <slot name="extras" />
+      
+      <div class="mb-3">
+        <v-textarea
+          v-model="cart.notes"
+          label="Notes for kitchen / delivery"
+          auto-grow
+          rows="2"
+          density="compact"
+          hide-details="auto"
+          placeholder="E.g. no chili, extra sauce, deliver to 2nd floor"
+        />
+      </div>
+
+      <!-- Pre-Order inside the cart -->
+      <div class="mb-3">
+        <div class="text-subtitle-2 mb-2">Pre-Order</div>
+        <v-row dense>
+          <v-col cols="12" md="6">
+            <v-text-field
+              v-model="cart.scheduledDate"
+              type="date"
+              label="Date"
+              density="compact"
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-text-field
+              v-model="cart.scheduledTime"
+              type="time"
+              label="Time"
+              density="compact"
+              hide-details="auto"
+            />
+          </v-col>
+          <v-col cols="12">
+            <v-select
+              v-model="cart.receivePlace"
+              :items="placeOptions"
+              label="Receive at"
+              density="compact"
+              clearable
+              hide-details="auto"
+            />
+            <!-- If you want free typing, replace v-select with v-combobox -->
+            <!--
+            <v-combobox
+              v-model="cart.receivePlace"
+              :items="placeOptions"
+              label="Receive at"
+              density="compact"
+              clearable
+              hide-details="auto"
+            />
+            -->
+          </v-col>
+        </v-row>
+        <div class="text-caption text-medium-emphasis">
+          We’ll prepare your order for the selected date & time.
+        </div>
+      </div>
+
+      <v-divider class="my-3" />
 
       <div class="d-flex justify-space-between">
         <v-btn variant="text" color="grey" @click="clear" :disabled="!items.length">

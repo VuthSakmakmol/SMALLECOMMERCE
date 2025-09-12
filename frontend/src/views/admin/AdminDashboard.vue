@@ -70,6 +70,7 @@ onMounted(load)
           density="compact"
           style="max-width:120px"
           @update:modelValue="load"
+          class="mt-5"
         />
         <v-btn class="ml-2" color="white" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh

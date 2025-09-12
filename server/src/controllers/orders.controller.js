@@ -371,7 +371,7 @@ async function getOne (req, res, next) {
   } catch (e) { next(e) }
 }
 
-// POST /orders  (decrement foods now, store ONLY submitted ingredient mods)
+// server/src/controllers/orders.controller.js  (inside module.exports file)
 async function create (req, res, next) {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -382,12 +382,27 @@ async function create (req, res, next) {
       return res.status(401).json({ message: 'Unauthenticated' })
     }
 
+    // validate type
     const type = (req.body.type || 'INDIVIDUAL').toUpperCase()
     if (!ORDER_TYPES.includes(type)) {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ message: 'Invalid order type' })
     }
 
+    // read pre-order fields
+    const rawWhen = req.body.scheduledFor || null  // ISO string or null
+    const receivePlace = String(req.body.receivePlace || '').trim()
+    let scheduledFor = null
+    if (rawWhen) {
+      const dt = new Date(rawWhen)
+      if (Number.isNaN(dt.getTime())) {
+        await session.abortTransaction(); session.endSession()
+        return res.status(400).json({ message: 'Invalid scheduledFor date/time' })
+      }
+      scheduledFor = dt
+    }
+
+    // validate items
     const itemsReq = Array.isArray(req.body.items) ? req.body.items : []
     if (!itemsReq.length) {
       await session.abortTransaction(); session.endSession()
@@ -409,17 +424,83 @@ async function create (req, res, next) {
           return res.status(400).json({ message: 'Food not found', id: it.foodId })
         }
 
-        // sanitize exactly what user submitted; OR derive from legacy snapshots
+        // Prefer submitted mods; otherwise derive from legacy snapshots (ingredients/groups)
         const submittedMods = Array.isArray(it.mods) ? it.mods : null
         let safeMods
         if (submittedMods && submittedMods.length) {
           safeMods = await sanitizeModsForFood(f, submittedMods)
         } else {
-          const legacyMods = await deriveModsFromLegacySnapshots(f, it)
+          // derive from legacy selections the client might have sent
+          const legacyMods = await (async function deriveModsFromLegacySnapshots(foodDoc, itemLike) {
+            const mods = []
+
+            // attachments
+            const ingAttach = new Map()
+            const grpAttach = new Map()
+            for (const a of (foodDoc.ingredients || [])) {
+              const id = String(a.ingredientId?._id || a.ingredientId)
+              ingAttach.set(id, a)
+            }
+            for (const g of (foodDoc.choiceGroups || [])) {
+              const id = String(g.groupId?._id || g.groupId)
+              grpAttach.set(id, g)
+            }
+
+            // library defs
+            const ingIds = [...ingAttach.keys()]
+            const grpIds = [...grpAttach.keys()]
+            const [ingDefs, grpDefs] = await Promise.all([
+              ingIds.length ? Ingredient.find({ _id: { $in: ingIds } }).lean() : [],
+              grpIds.length ? ChoiceGroup.find({ _id: { $in: grpIds } }).lean() : []
+            ])
+            const ingDef = new Map(ingDefs.map(x => [String(x._id), x]))
+            const grpDef = new Map(grpDefs.map(x => [String(x._id), x]))
+
+            // ingredients → mods
+            for (const sel of (itemLike.ingredients || [])) {
+              const id  = String(sel.ingredientId || '')
+              const def = ingDef.get(id)
+              if (!def) continue
+              const typ = String(def.type || 'BOOLEAN').toUpperCase()
+              if (typ === 'BOOLEAN') {
+                if (typeof sel.included === 'boolean') {
+                  mods.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type:typ, value:!!sel.included, label:def.name })
+                }
+              } else if (typ === 'PERCENT') {
+                if (sel.included && sel.value != null) {
+                  const n = Number(sel.value)
+                  if (Number.isFinite(n)) {
+                    const v = Math.max(def.min ?? 0, Math.min(def.max ?? 100, n))
+                    mods.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type:typ, value:v, label:def.name })
+                  }
+                }
+              } else if (typ === 'CHOICE') {
+                if (sel.included && sel.value != null) {
+                  const allowed = (def.choices || []).map(c => c.value)
+                  if (allowed.includes(sel.value)) {
+                    mods.push({ kind:'INGREDIENT', ingredientId:id, key:def.slug, type:typ, value:sel.value, label:def.name })
+                  }
+                }
+              }
+            }
+
+            // groups → mods
+            for (const g of (itemLike.groups || [])) {
+              const id  = String(g.groupId || '')
+              const def = grpDef.get(id)
+              if (!def) continue
+              const allowed = (def.choices || []).map(c => c.value)
+              if (g.choice != null && allowed.includes(g.choice)) {
+                mods.push({ kind:'GROUP', groupId:id, key:def.key, type:'CHOICE', value:g.choice, label:def.name })
+              }
+            }
+            return mods
+          })(f, it)
+
           safeMods = await sanitizeModsForFood(f, legacyMods)
         }
 
-        // derive snapshots from mods (so we always show what user picked)
+        // human-friendly snapshots from mods (what customer actually picked)
         const snaps = snapshotsFromMods(safeMods)
 
         prepared.push({
@@ -453,10 +534,11 @@ async function create (req, res, next) {
       }
     }
 
-    // Decrement food stock (expand packages to foods)
+    // Decrement food stock now (expanding packages to foods)
     const foodMap = await expandToFoods(itemsReq, session)
     await decrementFoodsStock(session, foodMap)
 
+    // Create order
     const [doc] = await Order.create([{
       type,
       status: STATUS.PLACED,
@@ -464,6 +546,11 @@ async function create (req, res, next) {
       groupKey: type === 'GROUP' && String(req.body.groupKey || '').trim()
         ? String(req.body.groupKey).trim() : null,
       notes: req.body.notes || '',
+
+      // NEW pre-order fields
+      scheduledFor,          // Date or null
+      receivePlace,          // string ('' allowed)
+
       items: prepared,
       grandTotal: 0,
       stockCommitted: true,
@@ -484,6 +571,7 @@ async function create (req, res, next) {
     session.endSession()
   }
 }
+
 
 // PATCH /orders/:id/accept
 async function accept (req, res, next) {

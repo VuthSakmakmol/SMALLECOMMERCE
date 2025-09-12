@@ -1,3 +1,4 @@
+<!-- src/views/admin/AdminOrder.vue -->
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import dayjs from 'dayjs'
@@ -36,6 +37,7 @@ const headers = [
   { title: 'Type', key: 'type' },
   { title: 'Customer / Group', key: 'who' },
   { title: 'Items', key: 'items' },
+  { title: 'Pre-Order', key: 'preorder' },             // <-- NEW column
   { title: 'Status', key: 'status', align: 'center' },
   { title: 'Actions', key: 'actions', align: 'end' }
 ]
@@ -45,7 +47,7 @@ function statusColor (s) {
 }
 function prettyWhen (d) {
   const t = dayjs(d)
-  return `${t.format('HH:mm')} · ${t.format('MMM D')}`
+  return t.isValid() ? `${t.format('HH:mm')} · ${t.format('MMM D')}` : '—'
 }
 function who (r) { return r.groupKey || r.customerName || '—' }
 
@@ -59,6 +61,7 @@ const filtered = computed(() => {
     list = list.filter(r =>
       (r.customerName || '').toLowerCase().includes(qq) ||
       (r.groupKey || '').toLowerCase().includes(qq) ||
+      (r.receivePlace || '').toLowerCase().includes(qq) ||            // allow search by place
       r.items.some(i => (i.name || '').toLowerCase().includes(qq))
     )
   }
@@ -116,9 +119,34 @@ function modsCount (it) {
 }
 
 /* ─────────────── detail helpers ─────────────── */
-async function fetchPackage(id) { /* optional cache fetch */ }
-async function fetchFood(id) { /* optional cache fetch */ }
-async function preloadForOrder(order) { /* optional preload */ }
+async function fetchPackage(id) {
+  const key = String(id)
+  if (pkgCache.value.has(key)) return pkgCache.value.get(key)
+  const { data } = await api.get(`/packages/${key}`)
+  pkgCache.value.set(key, data || {})
+  return data
+}
+async function fetchFood(id) {
+  const key = String(id)
+  if (foodCache.value.has(key)) return foodCache.value.get(key)
+  const { data } = await api.get(`/foods/${key}`)
+  foodCache.value.set(key, data || {})
+  return data
+}
+async function preloadForOrder(order) {
+  // For any package: load its lines & food names/images
+  const pkgIds = new Set()
+  const foodIds = new Set()
+  for (const it of order.items || []) {
+    if (it.kind === 'PACKAGE' && it.packageId) pkgIds.add(String(it.packageId))
+  }
+  await Promise.all([...pkgIds].map(fetchPackage))
+  for (const pid of pkgIds) {
+    const pkg = pkgCache.value.get(pid)
+    for (const line of (pkg?.items || [])) foodIds.add(String(line.foodId))
+  }
+  await Promise.all([...foodIds].map(fetchFood))
+}
 
 async function openDetail(order) {
   selected.value = order
@@ -134,6 +162,7 @@ onMounted(() => {
   const onStatus = (order)=> upsert(normalizeOrder(order))
   socket.on('order:new', onNew)
   socket.on('order:status', onStatus)
+
   onBeforeUnmount(() => {
     socket.off('order:new', onNew)
     socket.off('order:status', onStatus)
@@ -157,7 +186,7 @@ onMounted(() => {
         <v-col cols="12" md="4">
           <v-text-field
             v-model="q"
-            label="Search (customer, group, item)"
+            label="Search (customer, group, place, item)"
             prepend-inner-icon="mdi-magnify"
             clearable
             variant="outlined"
@@ -184,18 +213,17 @@ onMounted(() => {
           </div>
         </template>
 
-        <!-- Items with red pin if mods exist -->
+        <!-- Items with images + mods count -->
         <template #item.items="{ item }">
           <div class="d-flex flex-wrap ga-2">
             <v-chip
               v-for="it in item.items"
               :key="`${it.kind}:${it.foodId || it.packageId}:${it.name || ''}`"
-            
               class="pa-1"
               variant="outlined"
               @click="openDetail(item)"
             >
-              <v-avatar start size="32" style="margin-left: 1px;">
+              <v-avatar start size="32">
                 <v-img :src="it.imageUrl || 'https://via.placeholder.com/60?text=Img'" />
               </v-avatar>
               {{ it.qty }}× {{ it.name || 'Item' }}
@@ -215,6 +243,19 @@ onMounted(() => {
               </v-btn>
             </v-chip>
           </div>
+        </template>
+
+        <!-- NEW: Pre-Order column -->
+        <template #item.preorder="{ item }">
+          <div v-if="item.scheduledFor || item.receivePlace">
+            <v-chip size="x-small" color="purple" variant="tonal" class="mr-1" v-if="item.scheduledFor">
+              {{ prettyWhen(item.scheduledFor) }}
+            </v-chip>
+            <v-chip size="x-small" color="indigo" variant="tonal" v-if="item.receivePlace">
+              {{ item.receivePlace }}
+            </v-chip>
+          </div>
+          <span v-else class="text-medium-emphasis">—</span>
         </template>
 
         <template #item.status="{ item }">
@@ -239,28 +280,36 @@ onMounted(() => {
   </v-card>
 
   <!-- Details dialog -->
-  <v-dialog v-model="detailOpen" max-width="720">
+  <v-dialog v-model="detailOpen" max-width="820">
     <v-card>
-      <v-card-title>
-        Order #{{ selected?._id?.slice(-6) }} • {{ selected?.type }}
+      <v-card-title class="d-flex align-center">
+        <div class="mr-2">Order #{{ selected?._id?.slice(-6) }} • {{ selected?.type }}</div>
+        <v-chip size="small" :color="statusColor(selected?.status || '')" label>{{ selected?.status }}</v-chip>
+        <v-spacer />
+        <span class="text-caption text-medium-emphasis">ID: {{ selected?._id }}</span>
       </v-card-title>
 
       <v-card-text>
-        <div class="mb-2">
-          <strong>Placed:</strong> {{ selected?.createdAt ? prettyWhen(selected.createdAt) : '—' }}
-        </div>
-        <div class="mb-2">
-          <strong>Status:</strong>
-          <v-chip size="small" :color="statusColor(selected?.status || '')" label>
-            {{ selected?.status }}
-          </v-chip>
-        </div>
-        <div class="mb-2">
-          <strong>Customer / Group:</strong> {{ who(selected || {}) }}
-        </div>
-        <div class="mb-4">
-          <strong>Notes:</strong> {{ selected?.notes || '—' }}
-        </div>
+        <!-- Meta blocks -->
+        <v-row dense class="mb-3">
+          <v-col cols="12" md="6">
+            <v-sheet class="pa-3 rounded-lg elevation-0 bg-grey-lighten-4">
+              <div class="text-subtitle-2 mb-1">Placed</div>
+              <div>{{ selected?.createdAt ? prettyWhen(selected.createdAt) : '—' }}</div>
+              <div class="text-caption text-medium-emphasis">Updated {{ selected?.updatedAt ? prettyWhen(selected.updatedAt) : '—' }}</div>
+            </v-sheet>
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-sheet class="pa-3 rounded-lg elevation-0 bg-grey-lighten-4">
+              <div class="text-subtitle-2 mb-1">Pre-Order</div>
+              <div><strong>Time:</strong> {{ selected?.scheduledFor ? prettyWhen(selected.scheduledFor) : '—' }}</div>
+              <div><strong>Place:</strong> {{ selected?.receivePlace || '—' }}</div>
+            </v-sheet>
+          </v-col>
+        </v-row>
+
+        <div class="mb-2"><strong>Customer / Group:</strong> {{ who(selected || {}) }}</div>
+        <div class="mb-4"><strong>Notes:</strong> {{ selected?.notes || '—' }}</div>
 
         <v-divider class="my-3" />
 
@@ -269,8 +318,8 @@ onMounted(() => {
           <template v-for="it in selected?.items || []" :key="`${it.kind}:${it.foodId || it.packageId}:${it.name}`">
             <v-list-item>
               <template #prepend>
-                <v-avatar size="156" rounded="lg">
-                  <v-img :src="it.imageUrl || 'https://via.placeholder.com/80?text=Img'" cover />
+                <v-avatar size="84" rounded="lg">
+                  <v-img :src="it.imageUrl || 'https://via.placeholder.com/84x64?text=Img'" cover />
                 </v-avatar>
               </template>
               <v-list-item-title>{{ it.qty }}× {{ it.name }}</v-list-item-title>
@@ -279,15 +328,15 @@ onMounted(() => {
 
             <!-- Customizations -->
             <div v-if="modsCount(it) > 0" class="pl-12 mt-1 mb-3">
-              <div class="text-caption text-medium-emphasis mb-1">
-                Customizations:
-              </div>
+              <div class="text-caption text-medium-emphasis mb-1">Customizations:</div>
               <ul class="text-caption" style="margin:0;padding-left:16px;">
                 <li v-for="(m, idx) in (Array.isArray(it.mods) ? it.mods : [])" :key="idx">
                   <template v-if="String(m.kind).toUpperCase() === 'INGREDIENT'">
                     <strong>{{ m.label || 'Ingredient' }}</strong>:
                     <template v-if="String(m.type).toUpperCase() === 'BOOLEAN'">
-                      {{ m.value ? 'Included' : 'Removed' }}
+                      <span :class="m.value ? 'text-blue' : 'text-red'">
+                        {{ m.value ? 'Included' : 'Removed' }}
+                      </span>
                     </template>
                     <template v-else-if="String(m.type).toUpperCase() === 'PERCENT'">
                       {{ Number(m.value) }}%
@@ -300,6 +349,8 @@ onMounted(() => {
                     <strong>{{ m.label || 'Choice' }}</strong>: {{ m.value }}
                   </template>
                 </li>
+
+                <!-- fallback to snapshots if mods empty -->
                 <li v-if="(!it.mods || it.mods.length===0) && Array.isArray(it.ingredients)"
                     v-for="(ing, ii) in it.ingredients" :key="'ing-'+ii">
                   <strong>{{ ing.name || 'Ingredient' }}</strong>:
@@ -313,19 +364,16 @@ onMounted(() => {
               </ul>
             </div>
 
-            <!-- If package, show its foods -->
+            <!-- If package, show its foods (names + images) -->
             <v-expand-transition>
               <div v-if="it.kind==='PACKAGE' && pkgCache.get(String(it.packageId))" class="pl-12 pb-3">
                 <div class="text-caption text-medium-emphasis mb-1">Includes:</div>
                 <div class="d-flex flex-wrap ga-2">
-                  <template
-                    v-for="line in pkgCache.get(String(it.packageId)).items"
-                    :key="String(line.foodId)"
-                  >
+                  <template v-for="line in pkgCache.get(String(it.packageId)).items" :key="String(line.foodId)">
                     <v-chip size="small" variant="tonal" class="pa-1">
-                    <v-avatar start size="28">
-                      <v-img :src="(foodCache.get(String(line.foodId))?.imageUrl) || 'https://via.placeholder.com/60?text=Img'" />
-                    </v-avatar>
+                      <v-avatar start size="28">
+                        <v-img :src="(foodCache.get(String(line.foodId))?.imageUrl) || 'https://via.placeholder.com/60?text=Img'" />
+                      </v-avatar>
                       ×{{ line.qty }} {{ foodCache.get(String(line.foodId))?.name || '...' }}
                     </v-chip>
                   </template>
@@ -334,6 +382,27 @@ onMounted(() => {
             </v-expand-transition>
           </template>
         </v-list>
+
+        <!-- Timeline -->
+        <div class="mt-4">
+          <div class="text-subtitle-2 mb-2">Timeline</div>
+          <v-row dense>
+            <v-col cols="12" sm="6" md="4">
+              <div><strong>Accepted:</strong> {{ selected?.acceptedAt ? prettyWhen(selected.acceptedAt) : '—' }}</div>
+              <div><strong>Cooking:</strong> {{ selected?.cookingAt ? prettyWhen(selected.cookingAt) : '—' }}</div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div><strong>Ready:</strong> {{ selected?.readyAt ? prettyWhen(selected.readyAt) : '—' }}</div>
+              <div><strong>Delivered:</strong> {{ selected?.deliveredAt ? prettyWhen(selected.deliveredAt) : '—' }}</div>
+            </v-col>
+            <v-col cols="12" sm="6" md="4">
+              <div><strong>Canceled:</strong> {{ selected?.canceledAt ? prettyWhen(selected.canceledAt) : '—' }}</div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                Stock committed: {{ selected?.stockCommitted ? 'Yes' : 'No' }}
+              </div>
+            </v-col>
+          </v-row>
+        </div>
       </v-card-text>
 
       <v-card-actions>

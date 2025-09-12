@@ -67,24 +67,53 @@ function canAddFood (f) {
 
 function addFood (f) {
   if (!canAddFood(f)) return alert('No more stock available.')
-  cart.addFood(f, 1)        // your Pinia action (expects full food object)
+  cart.addFood(f, 1)
   cartOpen.value = true
   notify(`Added: ${f.name}`)
 }
 function addPackage (p) {
-  cart.addPackage(p, 1)     // your Pinia action (expects full package object)
+  cart.addPackage(p, 1)
   cartOpen.value = true
   notify(`Added package: ${p.name}`)
 }
 
+/* ---------- helpers ---------- */
+// Build an ISO string from local date+time fields
+function toIsoFromLocal (dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const [hh, mm]  = timeStr.split(':').map(Number)
+  const dt = new Date(y, (m - 1), d, hh, mm, 0, 0) // local time
+  return dt.toISOString()
+  // If you want to force Cambodia time as entered (no timezone shift):
+  // return `${dateStr}T${timeStr}:00+07:00`
+}
+
 /* ---------- place order ---------- */
 async function placeOrder () {
-  if (!cart.hasItems) return
+  // use the store’s validation (also checks schedule/place)
+  const chk = cart.validateBeforeSubmit()
+  if (!chk.ok) {
+    const msg = {
+      empty: 'Your cart is empty.',
+      individual_requires_food_only: 'Individual order can only contain foods.',
+      workshop_requires_packages_only: 'Workshop order can only contain packages.',
+      individual_needs_food: 'Please add at least one food.',
+      workshop_needs_package: 'Please add at least one package.',
+      schedule_required: 'Please choose a date and time.',
+      receive_place_required: 'Please choose where to receive the order.'
+    }[chk.reason] || 'Invalid order.'
+    return alert(msg)
+  }
+
+  const scheduledFor = toIsoFromLocal(cart.scheduledDate, cart.scheduledTime)
 
   const type = String(cart.orderType || 'INDIVIDUAL').toUpperCase()
   const payload = {
     type,
     notes: cart.notes || '',
+    scheduledFor,                 // <<< now sent
+    receivePlace: cart.receivePlace || '', // <<< now sent
     items: cart.items
       .map(i => {
         const base = {
@@ -93,7 +122,7 @@ async function placeOrder () {
         }
         if (i.kind === 'FOOD') {
           base.foodId = i.id
-          // include selections for server normalization
+          // legacy snapshots for server to normalize → mods
           base.ingredients = (i.ingredients || []).map(x => ({
             ingredientId: x.ingredientId,
             included: !!x.included,

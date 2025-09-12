@@ -78,6 +78,9 @@ const orderSchema = new mongoose.Schema({
   groupKey:    { type: String, default: null },
   notes:       { type: String, default: '' },
 
+  scheduledFor: { type: Date, default: null, index: true},
+  receivePlace: { type: String, default: ''},
+
   items: {
     type: [orderItemSchema],
     default: [],
