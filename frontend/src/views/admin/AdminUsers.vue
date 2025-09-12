@@ -1,3 +1,4 @@
+<!-- src/views/admin/AdminUsers.vue -->
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import api from '@/utils/api'
@@ -5,44 +6,47 @@ import { useAuth } from '@/store/auth'
 
 const auth = useAuth()
 
-/* ───────────────── state ───────────────── */
-const rows = ref([])
-const total = ref(0)
-const page = ref(1)
-const limit = ref(10)
+/* ───────── state ───────── */
+const rows   = ref([])
+const total  = ref(0)
+const page   = ref(1)
+const limit  = ref(10)
 
 const roleFilter = ref('')
-const q = ref('')
-const loading = ref(false)
+const q          = ref('')
+const loading    = ref(false)
 
-const dialog = ref(false)
-const editing = ref(null) // null=create
-const form = ref({ name: '', email: '', password: '', role: 'CUSTOMER', kitchenId: '' })
+const dialog  = ref(false)
+const editing = ref(null) // null = create
+
+// Admin can create ONLY non-guest users here.
+const form = ref({
+  loginId: '',
+  name: '',
+  password: '',
+  role: 'CUSTOMER',
+  kitchenId: ''
+})
 
 const roles = ['ADMIN', 'CHEF', 'CUSTOMER']
+const GUEST_PREFIX = '99'
 
-/* ───────────────── headers for table ───────────────── */
-const userHeaders = [
-  { title: 'User',    key: 'name',      sortable: true },
-  { title: 'Email',   key: 'email',     sortable: true },
-  { title: 'Role',    key: 'role' },
-  { title: 'Kitchen', key: 'kitchenId' },
-  { title: 'Active',  key: 'isActive',  align: 'center' },
-  { title: '',        key: 'actions',   align: 'end', sortable: false }
-]
-
-/* If you need the real “active admin count” across all pages,
-   ask the backend for it. For now we compute from visible rows. */
-const adminCount = computed(() =>
-  rows.value.filter(r => r.role === 'ADMIN' && r.isActive).length
+/* ───────── helpers ───────── */
+const adminCountVisible = computed(
+  () => rows.value.filter(r => r.role === 'ADMIN' && r.isActive).length
 )
-
-/* Pagination helpers */
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / limit.value)))
-const canPrev = computed(() => page.value > 1)
-const canNext = computed(() => page.value < pageCount.value)
+const canPrev   = computed(() => page.value > 1)
+const canNext   = computed(() => page.value < pageCount.value)
 
-/* ───────────────── api ───────────────── */
+const isMe = (u) => String(u._id) === String(auth.user?._id)
+const disableDeactivate = (u) => isMe(u) || (u.role === 'ADMIN' && adminCountVisible.value <= 1 && u.isActive)
+const disableDelete     = (u) => isMe(u) || (u.role === 'ADMIN' && adminCountVisible.value <= 1 && u.isActive)
+const disableRoleSelect = (u) => isMe(u) || u.isGuest // guests: role locked to CUSTOMER
+
+const isGuestId = (id) => String(id || '').startsWith(GUEST_PREFIX)
+
+/* ───────── api ───────── */
 const load = async () => {
   loading.value = true
   try {
@@ -54,86 +58,105 @@ const load = async () => {
         limit: limit.value
       }
     })
-    rows.value = data.data || data.rows || []
+    rows.value  = data.data || data.rows || []
     total.value = Number(data.total || rows.value.length)
   } finally {
     loading.value = false
   }
 }
 
-/* Reset to first page and reload when filters/search change */
-function applyFilters() {
-  page.value = 1
-  load()
-}
+function applyFilters () { page.value = 1; load() }
+function goPrev () { if (canPrev.value) { page.value -= 1; load() } }
+function goNext () { if (canNext.value) { page.value += 1; load() } }
 
-/* Pagination actions */
-function goPrev() {
-  if (!canPrev.value) return
-  page.value -= 1
-  load()
-}
-function goNext() {
-  if (!canNext.value) return
-  page.value += 1
-  load()
-}
-
-/* ───────────────── CRUD ───────────────── */
+/* ───────── CRUD ───────── */
 const openCreate = () => {
   editing.value = null
-  form.value = { name: '', email: '', password: '', role: 'CUSTOMER', kitchenId: '' }
+  form.value = { loginId: '', name: '', password: '', role: 'CUSTOMER', kitchenId: '' }
   dialog.value = true
 }
 
 const openEdit = (u) => {
   editing.value = u._id
-  form.value = { name: u.name, email: u.email, password: '', role: u.role, kitchenId: u.kitchenId || '' }
+  form.value = {
+    loginId:  u.loginId || '',
+    name:     u.name || '',
+    password: '',
+    role:     u.role || 'CUSTOMER',
+    kitchenId: u.kitchenId || ''
+  }
   dialog.value = true
 }
 
 const save = async () => {
-  if (editing.value) {
-    const payload = {
-      name: form.value.name,
-      email: form.value.email,
-      role: form.value.role,
-      kitchenId: form.value.kitchenId || ''
-    }
-    await api.put(`/users/${editing.value}`, payload)
-  } else {
-    await api.post('/users', form.value)
+  // validations (backend authoritative but we gate in UI)
+  if (!form.value.loginId) { alert('ID (loginId) required'); return }
+  if (!editing.value && (!form.value.password || form.value.password.length < 6)) {
+    alert('Password min 6 chars'); return
   }
-  dialog.value = false
-  await load()
+  if (!roles.includes(form.value.role)) { alert('Invalid role'); return }
+  if (!form.value.name || !form.value.name.trim()) { alert('Display name required'); return }
+
+  // IMPORTANT: Admin cannot create guests here.
+  if (!editing.value && isGuestId(form.value.loginId)) {
+    alert(`Guest IDs (${GUEST_PREFIX}xxxx) cannot be created here. Ask the user to self-register as Guest on the Login page.`)
+    return
+  }
+
+  const payloadBase = {
+    loginId:  form.value.loginId,
+    name:     form.value.name.trim(),
+    role:     form.value.role,
+    kitchenId: form.value.kitchenId || ''
+  }
+
+  try {
+    if (editing.value) {
+      // Never try to flip isGuest from FE; backend enforces guest invariants.
+      await api.put(`/users/${editing.value}`, payloadBase)
+    } else {
+      await api.post('/users', { ...payloadBase, password: form.value.password })
+    }
+    dialog.value = false
+    await load()
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Save failed')
+  }
 }
 
 const toggleActive = async (u, v) => {
-  await api.patch(`/users/${u._id}/toggle`, { value: v })
-  await load()
+  try {
+    await api.patch(`/users/${u._id}/toggle`, { value: v })
+    await load()
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Toggle failed')
+    await load()
+  }
 }
 
 const resetPassword = async (u) => {
-  const pwd = prompt(`New password for ${u.email}:`, '')
+  const pwd = prompt(`New password for ${u.name} (#${u.loginId}):`, '')
   if (!pwd) return
-  await api.patch(`/users/${u._id}/password`, { password: pwd })
-  alert('Password updated')
+  if (String(pwd).length < 6) { alert('Password min 6 chars'); return }
+  try {
+    await api.patch(`/users/${u._id}/password`, { password: pwd })
+    alert('Password updated')
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Reset failed')
+  }
 }
 
 const removeOne = async (u) => {
-  if (!confirm(`Delete ${u.email}?`)) return
-  await api.delete(`/users/${u._id}`)
-  await load()
+  if (!confirm(`Delete ${u.name} (#${u.loginId})?`)) return
+  try {
+    await api.delete(`/users/${u._id}`)
+    await load()
+  } catch (e) {
+    alert(e?.response?.data?.message || 'Delete failed')
+  }
 }
 
-/* ───────────────── guards ───────────────── */
-const isMe = (u) => String(u._id) === String(auth.user?._id)
-const disableDeactivate = (u) =>
-  isMe(u) || (u.role === 'ADMIN' && adminCount.value <= 1 && u.isActive)
-const disableDelete = (u) =>
-  isMe(u) || (u.role === 'ADMIN' && adminCount.value <= 1 && u.isActive)
-const disableRoleSelect = (u) => isMe(u) // cannot change own role
-
+/* ───────── lifecycle ───────── */
 onMounted(load)
 </script>
 
@@ -142,7 +165,7 @@ onMounted(load)
     <div class="d-flex align-center justify-space-between mb-3">
       <h2 class="text-h6">Users</h2>
       <div class="text-medium-emphasis">
-        {{ total }} users · Active admins (visible page): {{ adminCount }}
+        {{ total }} users · Active admins (visible page): {{ rows.filter(r => r.role==='ADMIN' && r.isActive).length }}
       </div>
     </div>
 
@@ -161,7 +184,7 @@ onMounted(load)
       />
       <v-text-field
         v-model="q"
-        label="Search name/email"
+        label="Search name / ID"
         variant="outlined"
         density="compact"
         style="max-width:260px"
@@ -181,7 +204,15 @@ onMounted(load)
     <v-progress-linear v-if="loading" indeterminate class="mb-2" />
 
     <v-data-table
-      :headers="userHeaders"
+      :headers="[
+        { title: 'User', key: 'name', sortable: true, width: 280 },
+        { title: 'Login ID', key: 'loginId', sortable: true, width: 160 },
+        { title: 'Role', key: 'role', width: 160 },
+        { title: 'Guest', key: 'isGuest', align: 'center', width: 90 },
+        { title: 'Kitchen', key: 'kitchenId', width: 160 },
+        { title: 'Active', key: 'isActive', align: 'center', width: 110 },
+        { title: '', key: 'actions', align: 'end', sortable: false, width: 160 }
+      ]"
       :items="rows"
       item-key="_id"
       density="compact"
@@ -192,29 +223,27 @@ onMounted(load)
       <template #item.name="{ item }">
         <div class="d-flex align-center ga-3">
           <v-avatar size="28" color="primary">
-            <span class="text-white">{{ (item.name || item.email || '').slice(0,1).toUpperCase() }}</span>
+            <span class="text-white">{{ (item.name || '').slice(0,1).toUpperCase() }}</span>
           </v-avatar>
           <div>
             <div class="d-flex align-center ga-2">
               <strong>{{ item.name || '—' }}</strong>
+              <v-chip v-if="item.isGuest" size="x-small" color="purple" variant="tonal">guest</v-chip>
               <v-chip v-if="isMe(item)" size="x-small" color="primary" variant="tonal">you</v-chip>
             </div>
-            <div class="text-caption text-medium-emphasis">#{{ item._id.slice(-6) }}</div>
+            <div class="text-caption text-medium-emphasis">#{{ String(item._id || '').slice(-6) }}</div>
           </div>
         </div>
       </template>
 
-      <!-- Email -->
-      <template #item.email="{ item }">
+      <!-- Login ID -->
+      <template #item.loginId="{ item }">
         <div class="d-flex align-center ga-1">
-          <span class="font-mono">{{ item.email }}</span>
-          <v-tooltip text="Copy email">
+          <span class="font-mono">{{ item.loginId }}</span>
+          <v-tooltip text="Copy ID">
             <template #activator="{ props }">
-              <v-btn
-                v-bind="props"
-                icon size="x-small" variant="text"
-                @click="navigator.clipboard && navigator.clipboard.writeText(item.email)"
-              >
+              <v-btn v-bind="props" icon size="x-small" variant="text"
+                     @click="navigator.clipboard && navigator.clipboard.writeText(item.loginId)">
                 <v-icon>mdi-content-copy</v-icon>
               </v-btn>
             </template>
@@ -231,8 +260,15 @@ onMounted(load)
           variant="outlined"
           :disabled="disableRoleSelect(item)"
           style="max-width:160px"
-          @update:model-value="val => api.put(`/users/${item._id}`, { role: val }).then(load)"
+          @update:model-value="val => api.put(`/users/${item._id}`, { role: val })
+            .then(load)
+            .catch(e => alert(e?.response?.data?.message || 'Update failed'))"
         />
+      </template>
+
+      <!-- Guest (read-only toggle) -->
+      <template #item.isGuest="{ item }">
+        <v-switch :model-value="item.isGuest" inset density="compact" :disabled="true" />
       </template>
 
       <!-- Kitchen -->
@@ -243,7 +279,9 @@ onMounted(load)
           variant="outlined"
           :disabled="item.role !== 'CHEF'"
           style="max-width:160px"
-          @change="() => api.put(`/users/${item._id}`, { kitchenId: item.kitchenId || '' }).then(load)"
+          @change="() => api.put(`/users/${item._id}`, { kitchenId: item.kitchenId || '' })
+            .then(load)
+            .catch(e => alert(e?.response?.data?.message || 'Update failed'))"
         />
       </template>
 
@@ -271,13 +309,8 @@ onMounted(load)
 
           <v-tooltip text="Reset password">
             <template #activator="{ props }">
-              <v-btn
-                v-bind="props"
-                icon size="small"
-                variant="tonal"
-                :disabled="isMe(item)"
-                @click="resetPassword(item)"
-              >
+              <v-btn v-bind="props" icon size="small" variant="tonal"
+                     :disabled="isMe(item)" @click="resetPassword(item)">
                 <v-icon>mdi-lock-reset</v-icon>
               </v-btn>
             </template>
@@ -285,13 +318,8 @@ onMounted(load)
 
           <v-tooltip text="Delete">
             <template #activator="{ props }">
-              <v-btn
-                v-bind="props"
-                icon size="small"
-                color="error"
-                :disabled="disableDelete(item)"
-                @click="removeOne(item)"
-              >
+              <v-btn v-bind="props" icon size="small" color="error"
+                     :disabled="disableDelete(item)" @click="removeOne(item)">
                 <v-icon>mdi-delete</v-icon>
               </v-btn>
             </template>
@@ -304,39 +332,81 @@ onMounted(load)
       </template>
     </v-data-table>
 
-    <!-- Pager -->
+    <!-- pager -->
     <div class="d-flex justify-end align-center mt-3" style="gap:8px">
-      <div class="text-caption text-medium-emphasis">
-        Page {{ page }} / {{ pageCount }}
-      </div>
+      <div class="text-caption text-medium-emphasis">Page {{ page }} / {{ pageCount }}</div>
       <v-btn :disabled="!canPrev" @click="goPrev">Prev</v-btn>
       <v-btn :disabled="!canNext" @click="goNext">Next</v-btn>
     </div>
 
-    <!-- Dialog -->
-    <v-dialog v-model="dialog" max-width="520">
+    <!-- dialog -->
+    <v-dialog v-model="dialog" max-width="600">
       <v-card>
         <v-card-title>{{ editing ? 'Edit User' : 'Add User' }}</v-card-title>
         <v-card-text>
-          <v-text-field v-model="form.name" label="Name" variant="outlined" density="compact"/>
-          <v-text-field v-model="form.email" label="Email" variant="outlined" density="compact"/>
-          <v-select v-model="form.role" :items="roles" label="Role" variant="outlined" density="compact"/>
-          <v-text-field
-            v-model="form.kitchenId"
-            label="Kitchen ID (CHEF only)"
-            :disabled="form.role!=='CHEF'"
-            variant="outlined"
-            density="compact"
-          />
-          <v-text-field
-            v-if="!editing"
-            v-model="form.password"
-            label="Password"
-            type="password"
-            variant="outlined"
-            density="compact"
-          />
+          <v-row dense>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.loginId"
+                label="Login ID"
+                variant="outlined"
+                density="compact"
+                hint="Guests must self-register (IDs starting with 99 cannot be created here)"
+                persistent-hint
+              />
+            </v-col>
+
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="form.role"
+                :items="roles"
+                label="Role"
+                variant="outlined"
+                density="compact"
+              />
+            </v-col>
+
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.name"
+                label="Display Name"
+                variant="outlined"
+                density="compact"
+                :rules="[v => !!(v && v.trim()) || 'Display name required']"
+                placeholder="e.g., Tony"
+              />
+            </v-col>
+
+            <!-- No 'Guest account' toggle here on purpose -->
+
+            <v-col cols="12" md="6" v-if="!editing">
+              <v-text-field
+                v-model="form.password"
+                label="Password"
+                type="password"
+                variant="outlined"
+                density="compact"
+              />
+            </v-col>
+
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.kitchenId"
+                label="Kitchen ID (CHEF only)"
+                :disabled="form.role !== 'CHEF'"
+                variant="outlined"
+                density="compact"
+              />
+            </v-col>
+          </v-row>
+
+          <div class="text-caption mt-2 text-medium-emphasis">
+            • Guests must self-register on the Login page. Admins cannot create IDs starting with <strong>{{ GUEST_PREFIX }}</strong> here.
+            <br/>• You can’t change your own role or deactivate/delete your own account.
+            <br/>• Backend prevents demoting/deactivating the last active admin.
+          </div>
         </v-card-text>
+
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="dialog=false">Cancel</v-btn>

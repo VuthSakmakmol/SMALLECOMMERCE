@@ -1,8 +1,6 @@
 const express = require('express')
 const router = express.Router()
 const ctrl = require('../controllers/users.controller')
-
-
 const { authenticate, authorize } = require('../middleware/auth')
 
 router.get('/', authenticate, authorize('ADMIN'), ctrl.list)

@@ -1,4 +1,3 @@
-// controllers/auth.controller.js
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const User = require('../models/User')
@@ -25,8 +24,8 @@ const registerEmployee = async (req, res, next) => {
 
     if (!loginId) return res.status(400).json({ message: 'ID required' })
     if (loginId.startsWith(GUEST_PREFIX))
-      return res.status(400).json({ message: 'IDs starting with 99 are reserved for guests' })
-    if (!name) return res.status(400).json({ message: 'Username required' })
+      return res.status(400).json({ message: `IDs starting with ${GUEST_PREFIX} are reserved for guests` })
+    if (!name) return res.status(400).json({ message: 'Display name required' })
     if (!password || String(password).length < 6)
       return res.status(400).json({ message: 'Password min 6 chars' })
 
@@ -65,10 +64,10 @@ const registerEmployee = async (req, res, next) => {
 
 /**
  * POST /api/auth/register-guest
- * body: { password }
+ * body: { password, displayName, fromCompany? }
  * - generates loginId "99xxxx"
- * - name is forced to "GUEST"
- * - role is CUSTOMER
+ * - name stored as "<displayName> (guest)"
+ * - role is CUSTOMER, isGuest=true
  */
 const registerGuest = async (req, res, next) => {
   try {
@@ -78,14 +77,16 @@ const registerGuest = async (req, res, next) => {
 
     if (!password || String(password).length < 6)
       return res.status(400).json({ message: 'Password min 6 chars' })
+    if (!displayName)
+      return res.status(400).json({ message: 'Display name required' })
 
     const loginId = await generateGuestId()
     const passwordHash = await bcrypt.hash(password, 10)
 
     const user = await User.create({
       loginId,
-      name: displayName || 'GUEST',   // use display name if given
-      guestOrg: fromCompany || null,  // save where they’re from
+      name: /\(guest\)$/i.test(displayName) ? displayName : `${displayName} (guest)`,
+      guestOrg: fromCompany || null,
       passwordHash,
       role: 'CUSTOMER',
       isGuest: true,
@@ -98,7 +99,7 @@ const registerGuest = async (req, res, next) => {
       token,
       user: {
         _id: user._id,
-        id: user.loginId,          // ← FE will show this
+        id: user.loginId,
         name: user.name,
         guestOrg: user.guestOrg,
         role: user.role,
@@ -108,7 +109,6 @@ const registerGuest = async (req, res, next) => {
     })
   } catch (err) { next(err) }
 }
-
 
 /**
  * POST /api/auth/login
@@ -142,9 +142,7 @@ const login = async (req, res, next) => {
   } catch (err) { next(err) }
 }
 
-/**
- * GET /api/auth/me
- */
+/** GET /api/auth/me */
 const me = async (req, res, next) => {
   try { res.json({ user: req.user }) } catch (err) { next(err) }
 }
