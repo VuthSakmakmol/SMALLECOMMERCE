@@ -17,6 +17,7 @@ const items = [
   { to: '/customer/packages',    text: 'Packages',   icon: 'mdi-store' },
   { to: '/customer/categories',  text: 'Categories', icon: 'mdi-shape' },
   { to: '/customer/history',     text: 'History',    icon: 'mdi-history' },
+  { to: '/customer/calendar',    text: 'Calendar',   icon: 'mdi-calendar' },
 ]
 
 const isActive = (to) => route.path === to

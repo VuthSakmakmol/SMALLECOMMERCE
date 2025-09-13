@@ -33,6 +33,7 @@ const CustomerLayout     = () => import('@/layouts/CustomerLayout.vue')
 const CustomerBrowse     = () => import('@/views/customer/CustomerBrowse.vue')
 const CustomerCategories = () => import('@/views/customer/CustomerCategories.vue')
 const CustomerHistory    = () => import('@/views/customer/CustomerHistory.vue')
+const CustomerCalendar    = () => import('@/views/customer/CustomerCalendar.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -81,6 +82,7 @@ const router = createRouter({
         { path: 'packages',    name: 'customer-packages',  component: CustomerPackages },
         { path: 'categories',  name: 'customer-categories',component: CustomerCategories },
         { path: 'history',     name: 'customer-history',   component: CustomerHistory },
+        { path: 'calendar',     name: 'customer-calendar',   component: CustomerCalendar },
       ]
     },
 

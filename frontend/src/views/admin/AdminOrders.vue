@@ -1,45 +1,44 @@
-<!-- src/views/admin/AdminOrder.vue -->
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import dayjs from 'dayjs'
 import api from '@/utils/api'
 import socket from '@/utils/socket'
 
-/* ───────── helpers: normalize order shape ───────── */
-function normalizeOrder(o = {}) {
+/* ───────── normalize order shape ───────── */
+function normalizeOrder (o = {}) {
   const cust = o.customerId
-  const customerId = cust && typeof cust === 'object' ? String(cust._id || cust.id || '') : String(cust || '')
+  const customerId   = cust && typeof cust === 'object' ? String(cust._id || cust.id || '') : String(cust || '')
   const customerName = o.customerName ?? (cust && typeof cust === 'object' ? cust.name || null : null)
   return { ...o, customerId, customerName }
 }
 
-/* ───────────────── state ───────────────── */
+/* ───────── state ───────── */
 const loading = ref(false)
-const rows = ref([])
+const rows    = ref([])
 
-const q = ref('')
-const type = ref('ALL')
+const q      = ref('')
+const type   = ref('ALL')
 const status = ref('ALL')
-const types = ['ALL','INDIVIDUAL','GROUP','WORKSHOP']
+const types    = ['ALL','INDIVIDUAL','GROUP','WORKSHOP']
 const statuses = ['ACTIVE','ALL','PLACED','ACCEPTED','COOKING','READY','DELIVERED','CANCELED']
 
 // dialog
 const detailOpen = ref(false)
-const selected = ref(null)
+const selected   = ref(null)
 
 // caches
-const pkgCache = ref(new Map())
+const pkgCache  = ref(new Map())
 const foodCache = ref(new Map())
 
-/* ───────────────── table ───────────────── */
+/* ───────── table ───────── */
 const headers = [
   { title: 'Time', key: 'createdAt', sortable: true },
   { title: 'Type', key: 'type' },
   { title: 'Customer / Group', key: 'who' },
   { title: 'Items', key: 'items' },
-  { title: 'Pre-Order', key: 'preorder' },             // <-- NEW column
+  { title: 'Pre-Order', key: 'preorder' },
   { title: 'Status', key: 'status', align: 'center' },
-  { title: 'Actions', key: 'actions', align: 'end' }
+  { title: 'Actions', key: 'actions', align: 'end' },
 ]
 
 function statusColor (s) {
@@ -61,14 +60,14 @@ const filtered = computed(() => {
     list = list.filter(r =>
       (r.customerName || '').toLowerCase().includes(qq) ||
       (r.groupKey || '').toLowerCase().includes(qq) ||
-      (r.receivePlace || '').toLowerCase().includes(qq) ||            // allow search by place
+      (r.receivePlace || '').toLowerCase().includes(qq) ||
       r.items.some(i => (i.name || '').toLowerCase().includes(qq))
     )
   }
   return list
 })
 
-/* ───────────────── fetch ───────────────── */
+/* ───────── fetch ───────── */
 async function load () {
   loading.value = true
   try {
@@ -82,7 +81,7 @@ async function load () {
   }
 }
 
-/* ───────────────── actions ───────────────── */
+/* ───────── actions ───────── */
 function canNext (r) { return ['PLACED','ACCEPTED','COOKING','READY'].includes(r.status) }
 function nextPath (r) {
   switch (r.status) {
@@ -109,7 +108,7 @@ function upsert (o) {
   else rows.value[i] = o
 }
 
-/* ─────────────── helpers ─────────────── */
+/* ───────── helpers ───────── */
 function modsCount (it) {
   if (!it || it.kind !== 'FOOD') return 0
   if (Array.isArray(it.mods) && it.mods.length) return it.mods.length
@@ -118,24 +117,23 @@ function modsCount (it) {
   return a + b
 }
 
-/* ─────────────── detail helpers ─────────────── */
-async function fetchPackage(id) {
+/* ───────── detail helpers ───────── */
+async function fetchPackage (id) {
   const key = String(id)
   if (pkgCache.value.has(key)) return pkgCache.value.get(key)
   const { data } = await api.get(`/packages/${key}`)
   pkgCache.value.set(key, data || {})
   return data
 }
-async function fetchFood(id) {
+async function fetchFood (id) {
   const key = String(id)
   if (foodCache.value.has(key)) return foodCache.value.get(key)
   const { data } = await api.get(`/foods/${key}`)
   foodCache.value.set(key, data || {})
   return data
 }
-async function preloadForOrder(order) {
-  // For any package: load its lines & food names/images
-  const pkgIds = new Set()
+async function preloadForOrder (order) {
+  const pkgIds  = new Set()
   const foodIds = new Set()
   for (const it of order.items || []) {
     if (it.kind === 'PACKAGE' && it.packageId) pkgIds.add(String(it.packageId))
@@ -148,18 +146,18 @@ async function preloadForOrder(order) {
   await Promise.all([...foodIds].map(fetchFood))
 }
 
-async function openDetail(order) {
-  selected.value = order
+async function openDetail (order) {
+  selected.value  = order
   detailOpen.value = true
   try { await preloadForOrder(order) } catch (e) {}
 }
 
-/* ───────────────── sockets ───────────────── */
+/* ───────── sockets ───────── */
 onMounted(() => {
   load()
   socket.emit('join', { role: 'ADMIN' })
-  const onNew = (order)   => upsert(normalizeOrder(order))
-  const onStatus = (order)=> upsert(normalizeOrder(order))
+  const onNew    = (order) => upsert(normalizeOrder(order))
+  const onStatus = (order) => upsert(normalizeOrder(order))
   socket.on('order:new', onNew)
   socket.on('order:status', onStatus)
 
@@ -244,7 +242,7 @@ onMounted(() => {
           </div>
         </template>
 
-        <!-- NEW: Pre-Order column -->
+        <!-- Pre-Order column -->
         <template #item.preorder="{ item }">
           <div v-if="item.scheduledFor || item.receivePlace">
             <v-chip size="x-small" color="purple" variant="tonal" class="mr-1" v-if="item.scheduledFor">
@@ -363,7 +361,7 @@ onMounted(() => {
               </ul>
             </div>
 
-            <!-- If package, show its foods (names + images) -->
+            <!-- If package, show its foods -->
             <v-expand-transition>
               <div v-if="it.kind==='PACKAGE' && pkgCache.get(String(it.packageId))" class="pl-12 pb-3">
                 <div class="text-caption text-medium-emphasis mb-1">Includes:</div>
