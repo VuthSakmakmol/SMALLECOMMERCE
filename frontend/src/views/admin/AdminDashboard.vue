@@ -59,8 +59,7 @@ onMounted(load)
 
 <template>
   <v-card class="rounded-2xl">
-    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
-      <v-toolbar-title>Admin Dashboard</v-toolbar-title>
+    <v-toolbar color="white" density="comfortable" class="rounded-t-2xl">
       <template #append>
         <v-select
           :items="[7,14,30,60,90]"
@@ -70,9 +69,10 @@ onMounted(load)
           density="compact"
           style="max-width:120px"
           @update:modelValue="load"
-          class="mt-5"
+          bg-color="orange"
+          class="mt-7"
         />
-        <v-btn class="ml-2" color="white" variant="flat" :loading="loading" @click="load">
+        <v-btn class="ml-2" color="orange" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
         </v-btn>
       </template>

@@ -1,6 +1,6 @@
 <!-- src/views/customer/CustomerBrowse.vue -->
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Cart from '@/components/Cart.vue'
 import { useCart } from '@/store/cart'
@@ -12,22 +12,16 @@ const cart   = useCart()
 
 /* ---------- state ---------- */
 const loading    = ref(false)
-const categories = ref([])
-const foods      = ref([])
-const packages   = ref([])
+const categories = ref([])   // fetched dynamically
+const foods      = ref([])   // all active foods
+const packages   = ref([])   // all active packages
 
 const q   = ref('')
-const cat = ref('ALL')
-const tab = ref('foods')
+const tab = ref('all')       // tabs: all | packages
 
 const cartOpen = ref(false)
 const snack    = ref({ show:false, text:'' })
 const notify   = t => (snack.value = { show:true, text:t })
-
-const categoryOptions = computed(() => [
-  { title: 'All Categories', value: 'ALL' },
-  ...categories.value.map(c => ({ title: c.name, value: c._id }))
-])
 
 /* ---------- load ---------- */
 async function loadCats () {
@@ -37,7 +31,6 @@ async function loadCats () {
 async function loadFoods () {
   const p = new URLSearchParams({ activeOnly: 'true' })
   if (q.value) p.set('q', q.value)
-  if (cat.value !== 'ALL') p.set('categoryId', cat.value)
   const { data } = await api.get(`/foods?${p.toString()}`)
   foods.value = Array.isArray(data) ? data : (data?.data || [])
 }
@@ -56,15 +49,13 @@ async function refresh () {
   }
 }
 
-/* ---------- stock helpers (new stockQty model) ---------- */
+/* ---------- stock helpers ---------- */
 function canAddFood (f) {
-  // null = unlimited
   if (f.stockQty === null || f.stockQty === undefined) return true
   const key       = `FOOD:${f._id}`
   const inCartQty = cart.items.find(i => i.key === key)?.qty || 0
   return inCartQty < Number(f.stockQty)
 }
-
 function addFood (f) {
   if (!canAddFood(f)) return alert('No more stock available.')
   cart.addFood(f, 1)
@@ -77,21 +68,15 @@ function addPackage (p) {
   notify(`Added package: ${p.name}`)
 }
 
-/* ---------- helpers ---------- */
-// Build an ISO string from local date+time fields
+/* ---------- place order ---------- */
 function toIsoFromLocal (dateStr, timeStr) {
   if (!dateStr || !timeStr) return null
   const [y, m, d] = dateStr.split('-').map(Number)
   const [hh, mm]  = timeStr.split(':').map(Number)
   const dt = new Date(y, (m - 1), d, hh, mm, 0, 0) // local time
   return dt.toISOString()
-  // If you want to force Cambodia time as entered (no timezone shift):
-  // return `${dateStr}T${timeStr}:00+07:00`
 }
-
-/* ---------- place order ---------- */
 async function placeOrder () {
-  // use the store’s validation (also checks schedule/place)
   const chk = cart.validateBeforeSubmit()
   if (!chk.ok) {
     const msg = {
@@ -105,43 +90,29 @@ async function placeOrder () {
     }[chk.reason] || 'Invalid order.'
     return alert(msg)
   }
-
   const scheduledFor = toIsoFromLocal(cart.scheduledDate, cart.scheduledTime)
-
   const type = String(cart.orderType || 'INDIVIDUAL').toUpperCase()
+
   const payload = {
     type,
     notes: cart.notes || '',
-    scheduledFor,                 // <<< now sent
-    receivePlace: cart.receivePlace || '', // <<< now sent
+    scheduledFor,
+    receivePlace: cart.receivePlace || '',
     items: cart.items
       .map(i => {
-        const base = {
-          kind: i.kind, // 'FOOD' | 'PACKAGE'
-          qty: Math.max(1, parseInt(i.qty, 10) || 1),
-        }
+        const base = { kind: i.kind, qty: Math.max(1, parseInt(i.qty, 10) || 1) }
         if (i.kind === 'FOOD') {
           base.foodId = i.id
-          // legacy snapshots for server to normalize → mods
           base.ingredients = (i.ingredients || []).map(x => ({
-            ingredientId: x.ingredientId,
-            included: !!x.included,
-            value: x.value ?? null
+            ingredientId: x.ingredientId, included: !!x.included, value: x.value ?? null
           }))
-          base.groups = (i.groups || []).map(g => ({
-            groupId: g.groupId,
-            choice: g.choice ?? null
-          }))
+          base.groups = (i.groups || []).map(g => ({ groupId: g.groupId, choice: g.choice ?? null }))
         } else if (i.kind === 'PACKAGE') {
           base.packageId = i.id
         }
         return base
       })
       .filter(x => (x.kind === 'FOOD' && x.foodId) || (x.kind === 'PACKAGE' && x.packageId))
-  }
-
-  if (type === 'GROUP' && cart.groupKey && String(cart.groupKey).trim()) {
-    payload.groupKey = String(cart.groupKey).trim()
   }
 
   try {
@@ -161,10 +132,82 @@ async function placeOrder () {
   }
 }
 
+/* ---------- dynamic grouping (no hard-coding) ---------- */
+/* Text search for foods (client-side) */
+const filteredFoods = computed(() => {
+  const term = q.value.trim().toLowerCase()
+  if (!term) return foods.value
+  return foods.value.filter(f => {
+    const name = (f.name || '').toLowerCase()
+    const catName =
+      typeof f.categoryId === 'object' && f.categoryId
+        ? String(f.categoryId.name || '').toLowerCase()
+        : ''
+    const desc = (f.description || '').toLowerCase()
+    const tags = (f.tags || []).join(' ').toLowerCase()
+    return name.includes(term) || catName.includes(term) || desc.includes(term) || tags.includes(term)
+  })
+})
+
+/* Packages search */
+const filteredPackages = computed(() => {
+  const term = q.value.trim().toLowerCase()
+  if (!term) return packages.value
+  return packages.value.filter(p => {
+    const name = (p.name || '').toLowerCase()
+    const desc = (p.description || '').toLowerCase()
+    const tags = (p.tags || []).join(' ').toLowerCase()
+    return name.includes(term) || desc.includes(term) || tags.includes(term)
+  })
+})
+
+/* Group foods by category id — supports categoryId as object or string */
+const foodsByCat = computed(() => {
+  const map = new Map()
+  for (const c of categories.value) map.set(String(c._id), [])
+  for (const f of filteredFoods.value) {
+    const cid =
+      typeof f.categoryId === 'object' && f.categoryId
+        ? String(f.categoryId._id || f.categoryId.id || '')
+        : String(f.categoryId || '')
+    if (cid && map.has(cid)) map.get(cid).push(f)
+  }
+  return map
+})
+
+/* Sort categories (purely dynamic): by `order` if present, else by `name` */
+const orderedCategories = computed(() => {
+  return [...categories.value].sort((a, b) => {
+    const ao = a.order ?? 9999, bo = b.order ?? 9999
+    return ao - bo || String(a.name || '').localeCompare(String(b.name || ''))
+  })
+})
+
+/* Helper for template */
+const foodsOf = (cid) => foodsByCat.value.get(String(cid)) || []
+
+/* ---------- reactive server sync on q ---------- */
+let qTimer
+watch(q, () => {
+  clearTimeout(qTimer)
+  qTimer = setTimeout(() => {
+    // keep backend search/stock fresh while typing
+    loadFoods()
+    loadPkgs()
+  }, 300)
+})
+
 /* ---------- init ---------- */
 onMounted(async () => {
-  if (route.query.cat) cat.value = String(route.query.cat)
+  // optional deep-link: ?cat=<id> → scroll into view after first render
+  const initialCat = route.query.cat ? String(route.query.cat) : null
   await refresh()
+  if (initialCat) {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-cat="${initialCat}"]`)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
 })
 </script>
 
@@ -184,7 +227,7 @@ onMounted(async () => {
 
     <div class="pa-4">
       <v-row dense class="mb-3">
-        <v-col cols="12" md="5">
+        <v-col cols="12" md="6">
           <v-text-field
             v-model="q"
             label="Search foods or packages"
@@ -192,78 +235,83 @@ onMounted(async () => {
             variant="outlined"
             prepend-inner-icon="mdi-magnify"
             clearable
-            @keyup.enter="refresh"
           />
         </v-col>
-        <v-col cols="12" md="4">
-          <v-select
-            :items="categoryOptions"
-            density="compact"
-            variant="outlined"
-            v-model="cat"
-            label="Category"
-            :disabled="tab!=='foods'"
-            @update:modelValue="loadFoods"
-          />
-        </v-col>
-        <v-col cols="12" md="3">
-          <v-btn :loading="loading" block @click="refresh">
+        <v-col cols="12" md="2">
+          <v-btn :loading="loading" block @click="refresh" style="background-color: orange;">
             <v-icon start>mdi-refresh</v-icon> Refresh
           </v-btn>
         </v-col>
       </v-row>
 
+      <!-- Tabs: All categories (rows) before Packages -->
       <v-tabs v-model="tab" class="mb-4">
-        <v-tab value="foods">Foods</v-tab>
+        <v-tab value="all">All</v-tab>
         <v-tab value="packages">Packages</v-tab>
       </v-tabs>
 
       <v-window v-model="tab">
-        <!-- Foods -->
-        <v-window-item value="foods">
-          <v-row>
-            <v-col
-              v-for="f in foods"
-              :key="f._id"
-              cols="12" sm="6" md="4" lg="3"
-              class="mb-4"
+        <!-- ALL: one row per dynamic category -->
+        <v-window-item value="all">
+          <div class="category-list">
+            <div
+              v-for="c in orderedCategories"
+              :key="c._id"
+              class="category-row"
+              :data-cat="c._id"
             >
-              <v-card class="h-100 rounded-xl">
-                <v-img :src="f.imageUrl || 'https://via.placeholder.com/600x400?text=Food'" height="270" cover />
-                <v-card-title class="text-subtitle-1">{{ f.name }}</v-card-title>
-                <v-card-subtitle>{{ f.categoryId?.name || '—' }}</v-card-subtitle>
-                <v-card-text>
-                  <div class="text-caption text-medium-emphasis mb-2">
-                    {{ f.description || ' ' }}
+              <div class="category-header">
+                <v-icon color="primary" class="mr-1">mdi-tag</v-icon>
+                <strong>{{ c.name }}</strong>
+              </div>
+
+              <div class="h-scroll">
+                <template v-if="foodsOf(c._id).length">
+                  <div
+                    v-for="f in foodsOf(c._id)"
+                    :key="f._id"
+                    class="food-card"
+                  >
+                    <v-card class="rounded-xl">
+                      <v-img :src="f.imageUrl || 'https://via.placeholder.com/600x400?text=Food'" height="180" cover />
+                      <v-card-title class="text-subtitle-2">{{ f.name }}</v-card-title>
+                      <v-card-text class="py-1">
+                        <div class="text-caption text-medium-emphasis mb-2">
+                          {{ f.description || ' ' }}
+                        </div>
+                        <div class="d-flex align-center justify-space-between">
+                          <v-chip size="x-small" color="green" variant="tonal" v-if="f.stockQty === null">Unlimited</v-chip>
+                          <v-chip size="x-small" color="orange" variant="tonal" v-else>Stock: {{ f.stockQty }}</v-chip>
+                          <div class="text-caption">{{ (f.tags || []).slice(0,3).join(', ') || ' ' }}</div>
+                        </div>
+                      </v-card-text>
+                      <v-card-actions>
+                        <v-spacer />
+                        <v-btn color="primary" size="small" :disabled="!canAddFood(f)" @click.stop="addFood(f)">
+                          <v-icon start>mdi-cart-plus</v-icon> Add
+                        </v-btn>
+                      </v-card-actions>
+                    </v-card>
                   </div>
-                  <div class="d-flex align-center justify-space-between">
-                    <v-chip size="small" color="green" variant="tonal" v-if="f.stockQty === null">
-                      In stock: Unlimited
-                    </v-chip>
-                    <v-chip size="small" color="orange" variant="tonal" v-else>
-                      In stock: {{ f.stockQty }}
-                    </v-chip>
-                    <div class="text-caption">
-                      Tags: {{ (f.tags || []).join(', ') || '—' }}
-                    </div>
-                  </div>
-                </v-card-text>
-                <v-card-actions>
-                  <v-spacer />
-                  <v-btn color="primary" :disabled="!canAddFood(f)" @click.stop="addFood(f)">
-                    <v-icon start>mdi-cart-plus</v-icon> Add
-                  </v-btn>
-                </v-card-actions>
-              </v-card>
-            </v-col>
-          </v-row>
+                </template>
+
+                <!-- even if empty, keep the row visible for new categories -->
+                <div v-else class="empty-pill">No items yet</div>
+              </div>
+            </div>
+
+            <div v-if="!loading && !categories.length" class="text-center text-medium-emphasis py-8">
+              <v-icon size="36" class="mb-2">mdi-tag-off-outline</v-icon>
+              <div>No categories found.</div>
+            </div>
+          </div>
         </v-window-item>
 
-        <!-- Packages -->
+        <!-- PACKAGES -->
         <v-window-item value="packages">
           <v-row>
             <v-col
-              v-for="p in packages"
+              v-for="p in filteredPackages"
               :key="p._id"
               cols="12" sm="6" md="4" lg="3"
               class="mb-4"
@@ -294,12 +342,19 @@ onMounted(async () => {
                 </v-card-actions>
               </v-card>
             </v-col>
+
+            <v-col v-if="!loading && !filteredPackages.length" cols="12">
+              <div class="text-center text-medium-emphasis py-8">
+                <v-icon size="36" class="mb-2">mdi-package-variant-closed-remove</v-icon>
+                <div>No packages found.</div>
+              </div>
+            </v-col>
           </v-row>
         </v-window-item>
       </v-window>
     </div>
 
-    <!-- Cart drawer (with customization dialog inside) -->
+    <!-- Cart drawer -->
     <Cart v-model="cartOpen" @place="placeOrder">
       <template #extras>
         <v-select
@@ -336,4 +391,32 @@ onMounted(async () => {
 
 <style scoped>
 .cart-fab { position: fixed; right: 20px; bottom: 20px; z-index: 10; }
+
+/* Vertical list of category rows */
+.category-list { display: flex; flex-direction: column; gap: 18px; }
+
+/* Row header */
+.category-header { display: flex; align-items: center; padding: 4px 4px 8px 4px; font-size: 16px; }
+
+/* Horizontal scroller of food cards */
+.h-scroll { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+
+/* Card width in the strip */
+.food-card { flex: 0 0 240px; }
+
+.empty-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(0,0,0,0.3);
+  font-size: 12px;
+  white-space: nowrap;
+  margin: 6px 0;
+}
+
+@media (max-width: 600px) {
+  .category-header { font-size: 14px; }
+  .food-card { flex-basis: 200px; }
+}
 </style>

@@ -89,7 +89,6 @@ const openEdit = (u) => {
 }
 
 const save = async () => {
-  // validations (backend authoritative but we gate in UI)
   if (!form.value.loginId) { alert('ID (loginId) required'); return }
   if (!editing.value && (!form.value.password || form.value.password.length < 6)) {
     alert('Password min 6 chars'); return
@@ -97,7 +96,6 @@ const save = async () => {
   if (!roles.includes(form.value.role)) { alert('Invalid role'); return }
   if (!form.value.name || !form.value.name.trim()) { alert('Display name required'); return }
 
-  // IMPORTANT: Admin cannot create guests here.
   if (!editing.value && isGuestId(form.value.loginId)) {
     alert(`Guest IDs (${GUEST_PREFIX}xxxx) cannot be created here. Ask the user to self-register as Guest on the Login page.`)
     return
@@ -112,7 +110,6 @@ const save = async () => {
 
   try {
     if (editing.value) {
-      // Never try to flip isGuest from FE; backend enforces guest invariants.
       await api.put(`/users/${editing.value}`, payloadBase)
     } else {
       await api.post('/users', { ...payloadBase, password: form.value.password })
@@ -163,7 +160,6 @@ onMounted(load)
 <template>
   <div class="pa-2">
     <div class="d-flex align-center justify-space-between mb-3">
-      <h2 class="text-h6">Users</h2>
       <div class="text-medium-emphasis">
         {{ total }} users · Active admins (visible page): {{ rows.filter(r => r.role==='ADMIN' && r.isActive).length }}
       </div>
@@ -171,7 +167,8 @@ onMounted(load)
 
     <!-- toolbar -->
     <div class="d-flex align-center mt-4" style="gap:12px; flex-wrap: wrap;">
-      <v-select
+      <!-- v-select → v-autocomplete (autocomplete filter) -->
+      <v-autocomplete
         v-model="roleFilter"
         :items="roles"
         label="Filter role"
@@ -179,6 +176,7 @@ onMounted(load)
         density="compact"
         clearable
         style="max-width:180px"
+        auto-select-first
         @update:model-value="applyFilters"
         @click:clear="applyFilters"
       />
@@ -192,11 +190,11 @@ onMounted(load)
         clearable
         @click:clear="applyFilters"
       />
-      <v-btn color="primary" class="mb-4" @click="openCreate">
+      <v-btn color="orange" class="mb-4" @click="openCreate">
         <v-icon start>mdi-account-plus</v-icon> Add User
       </v-btn>
       <v-spacer />
-      <v-btn variant="text" class="mb-4" :loading="loading" @click="load">
+      <v-btn variant="text" color="orange" class="mb-4" :loading="loading" @click="load">
         <v-icon start>mdi-refresh</v-icon> Refresh
       </v-btn>
     </div>
@@ -251,15 +249,18 @@ onMounted(load)
         </div>
       </template>
 
-      <!-- Role -->
+      <!-- Role: v-select → v-autocomplete (inline editable) -->
       <template #item.role="{ item }">
-        <v-select
+        <v-autocomplete
           v-model="item.role"
           :items="roles"
           density="compact"
           variant="outlined"
-          :disabled="disableRoleSelect(item)"
+          class="tiny-select"
           style="max-width:160px"
+          :disabled="disableRoleSelect(item)"
+          auto-select-first
+          hide-no-data
           @update:model-value="val => api.put(`/users/${item._id}`, { role: val })
             .then(load)
             .catch(e => alert(e?.response?.data?.message || 'Update failed'))"
@@ -278,7 +279,7 @@ onMounted(load)
           density="compact"
           variant="outlined"
           :disabled="item.role !== 'CHEF'"
-          style="max-width:160px"
+          style="max-width:160px;"
           @change="() => api.put(`/users/${item._id}`, { kitchenId: item.kitchenId || '' })
             .then(load)
             .catch(e => alert(e?.response?.data?.message || 'Update failed'))"
@@ -357,12 +358,15 @@ onMounted(load)
             </v-col>
 
             <v-col cols="12" md="6">
-              <v-select
+              <!-- v-select → v-autocomplete -->
+              <v-autocomplete
                 v-model="form.role"
                 :items="roles"
                 label="Role"
                 variant="outlined"
                 density="compact"
+                auto-select-first
+                hide-no-data
               />
             </v-col>
 
@@ -376,8 +380,6 @@ onMounted(load)
                 placeholder="e.g., Tony"
               />
             </v-col>
-
-            <!-- No 'Guest account' toggle here on purpose -->
 
             <v-col cols="12" md="6" v-if="!editing">
               <v-text-field
@@ -421,4 +423,27 @@ onMounted(load)
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
+
+/* keep the shorter control for inline table editor */
+.tiny-select .v-field {
+  min-height: 28px !important;
+  font-size: 13px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* ↓↓↓ extra tweak for phones */
+@media (max-width: 600px) {
+  .tiny-select .v-field {
+    min-height: 24px !important;
+    font-size: 11px !important;
+  }
+  .v-data-table {
+    font-size: 12px; /* shrink whole table text */
+  }
+  .v-btn {
+    font-size: 12px;
+  }
+}
 </style>
+

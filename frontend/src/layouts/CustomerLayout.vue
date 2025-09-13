@@ -73,7 +73,7 @@ const leftOffset = computed(() => {
       <v-app-bar-nav-icon @click="drawer = !drawer" />
       <v-toolbar-title>Customer</v-toolbar-title>
       <v-spacer />
-      <span v-if="auth.role === 'CUSTOMER'">{{ auth.user?.name }}</span>
+      <span v-if="auth.role === 'CUSTOMER'" style="margin-right: 5px;">{{ auth.user?.name }}</span>
       <v-btn v-if="mdAndUp" icon @click="rail = !rail">
         <v-icon>mdi-arrow-expand-left</v-icon>
       </v-btn>

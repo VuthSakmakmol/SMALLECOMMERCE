@@ -44,14 +44,19 @@ onMounted(() => {
     <v-navigation-drawer v-model="drawer" app>
       <v-list density="comfortable" nav>
         <v-list-item
-          v-for="l in links" :key="l.to"
-          :to="l.to" :active="route.path === l.to" @click="go(l.to)"
-          :prepend-icon="l.icon" :title="l.text" />
+          v-for="l in links" 
+          :key="l.to"
+          :to="l.to" 
+          :active="route.path === l.to" 
+          @click="go(l.to)"
+          :prepend-icon="l.icon" 
+          active-color="orange"
+          :title="l.text" />
       </v-list>
       <v-divider class="my-2" />
       <v-list>
         <v-list-item
-          prepend-icon="mdi-logout" title="Logout" @click="logout" />
+          prepend-icon="mdi-logout" title="Logout" class="text-red" @click="logout" />
       </v-list>
     </v-navigation-drawer>
 

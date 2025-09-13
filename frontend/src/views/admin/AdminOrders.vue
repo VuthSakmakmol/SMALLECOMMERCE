@@ -172,10 +172,9 @@ onMounted(() => {
 
 <template>
   <v-card class="rounded-2xl">
-    <v-toolbar density="comfortable" color="primary" class="rounded-t-2xl">
-      <v-toolbar-title>Orders</v-toolbar-title>
+    <v-toolbar density="comfortable" color="white" class="rounded-t-2xl">
       <template #append>
-        <v-btn variant="flat" color="white" :loading="loading" @click="load">
+        <v-btn variant="flat" color="orange" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
         </v-btn>
       </template>
@@ -193,10 +192,10 @@ onMounted(() => {
             density="compact"
           />
         </v-col>
-        <v-col cols="12" md="3">
+        <v-col cols="12" md="2">
           <v-select :items="types" v-model="type" label="Type" variant="outlined" density="compact"/>
         </v-col>
-        <v-col cols="12" md="3">
+        <v-col cols="12" md="2">
           <v-select :items="statuses" v-model="status" label="Status" variant="outlined" density="compact"/>
         </v-col>
       </v-row>

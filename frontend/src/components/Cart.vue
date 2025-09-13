@@ -19,8 +19,10 @@ const items = computed(() => cart.items)
 
 /* Suggested places (editable). Change to v-combobox if you want free typing + chips */
 const placeOptions = [
-  'Meeting Room A',
-  'Meeting Room B',
+  'Apsara meeting Room',
+  'adidas meeting Room',
+  'Angkor meeting Room',
+  'Dark room',
   'HR Office',
   'Shipping Office',
   'Reception Desk'
@@ -232,6 +234,7 @@ function saveCustomize () {
           v-model="cart.notes"
           label="Notes for kitchen / delivery"
           auto-grow
+          variant="outlined"
           rows="2"
           density="compact"
           hide-details="auto"
@@ -249,6 +252,7 @@ function saveCustomize () {
               type="date"
               label="Date"
               density="compact"
+              variant="outlined"
               hide-details="auto"
             />
           </v-col>
@@ -257,6 +261,7 @@ function saveCustomize () {
               v-model="cart.scheduledTime"
               type="time"
               label="Time"
+              variant="outlined"
               density="compact"
               hide-details="auto"
             />
@@ -266,6 +271,7 @@ function saveCustomize () {
               v-model="cart.receivePlace"
               :items="placeOptions"
               label="Receive at"
+              variant="outlined"
               density="compact"
               clearable
               hide-details="auto"

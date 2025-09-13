@@ -273,13 +273,12 @@ async function save () {
 
 <template>
   <v-card class="rounded-2xl">
-    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
-      <v-toolbar-title>Foods</v-toolbar-title>
+    <v-toolbar color="white" density="comfortable" class="rounded-t-2xl">
       <template #append>
-        <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="loadFoods">
+        <v-btn class="mr-2" color="orange" variant="flat" :loading="loading" @click="loadFoods">
           <v-icon start>mdi-refresh</v-icon> Refresh
         </v-btn>
-        <v-btn color="white" variant="flat" @click="openCreate">
+        <v-btn color="orange" variant="flat" @click="openCreate">
           <v-icon start>mdi-plus</v-icon> New
         </v-btn>
       </template>
@@ -287,19 +286,16 @@ async function save () {
 
     <div class="pa-4">
       <v-row dense class="mb-3">
-        <v-col cols="12" md="5">
+        <v-col cols="12" md="3">
           <v-text-field v-model="q" label="Search foods" density="compact" variant="outlined"
                         prepend-inner-icon="mdi-magnify" clearable @keyup.enter="loadFoods"/>
         </v-col>
-        <v-col cols="12" md="4">
+        <v-col cols="12" md="3">
           <v-select
             :items="[{title:'All Categories', value:'ALL'}, ...categoryOptions]"
             v-model="catFilter" label="Category" density="compact" variant="outlined"
             @update:modelValue="loadFoods"
           />
-        </v-col>
-        <v-col cols="12" md="3">
-          <v-btn :loading="loading" block @click="loadFoods"><v-icon start>mdi-refresh</v-icon> Refresh</v-btn>
         </v-col>
       </v-row>
 

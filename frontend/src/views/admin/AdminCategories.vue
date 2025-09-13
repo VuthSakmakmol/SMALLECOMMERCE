@@ -96,21 +96,20 @@ onMounted(load)
 
 <template>
   <v-card class="rounded-2xl">
-    <v-toolbar color="primary" density="comfortable" class="rounded-t-2xl">
-      <v-toolbar-title>Categories</v-toolbar-title>
+    <v-toolbar color="white" density="comfortable" class="rounded-t-2xl">
       <template #append>
-        <v-btn class="mr-2" color="white" variant="flat" :loading="loading" @click="load">
+        <v-btn class="mr-2" color="orange" variant="flat" :loading="loading" @click="load">
           <v-icon start>mdi-refresh</v-icon> Refresh
         </v-btn>
-        <v-btn color="white" variant="flat" @click="openCreate">
+        <v-btn color="orange" variant="flat" @click="openCreate">
           <v-icon start>mdi-plus</v-icon> New
         </v-btn>
       </template>
     </v-toolbar>
 
     <div class="pa-4">
-      <v-row dense class="mb-3">
-        <v-col cols="12" md="6">
+      <v-row dense class="mb-2">
+        <v-col cols="12" md="3">
           <v-text-field
             v-model="q"
             density="compact"
@@ -120,11 +119,6 @@ onMounted(load)
             clearable
             @keyup.enter="load"
           />
-        </v-col>
-        <v-col cols="12" md="3">
-          <v-btn :loading="loading" @click="load" block>
-            <v-icon start>mdi-refresh</v-icon> Refresh
-          </v-btn>
         </v-col>
       </v-row>
 
